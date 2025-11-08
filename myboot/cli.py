@@ -386,6 +386,9 @@ dev = [
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
+[tool.hatch.build.targets.wheel]
+packages = ["app"]
+
 [tool.black]
 line-length = 88
 target-version = ['py39', 'py310', 'py311', 'py312']

@@ -1,6 +1,6 @@
 [project]
 name = "myboot"
-version = "0.1.1"
+version = "0.1.2"
 description = "类似 Spring Boot 的 Python 快速开发框架"
 authors = [
     {name = "TrumanDu", email = "truman.p.du@qq.com"}

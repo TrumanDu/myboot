@@ -7,11 +7,14 @@
 import threading
 import time
 from datetime import datetime
-from typing import Optional, Callable, Any
+from typing import Optional, Callable, Any, TYPE_CHECKING
 
 from loguru import logger
 
 from .config import get_config
+
+if TYPE_CHECKING:
+    from ..jobs.scheduled_job import ScheduledJob
 
 
 class Scheduler:
@@ -26,7 +29,8 @@ class Scheduler:
         """
         self._logger = logger.bind(name="scheduler")
         self._running = False
-        self._jobs = {}
+        self._jobs = {}  # 存储函数任务
+        self._scheduled_jobs = {}  # 存储 ScheduledJob 对象
         self._thread = None
         self._config_file = config_file
         
@@ -47,7 +51,7 @@ class Scheduler:
             self._tz = pytz.timezone(self._timezone)
             self._logger.debug(f"时区设置为: {self._timezone}")
         except ImportError:
-            self._logger.warning(f"未安装 pytz，无法设置时区，使用系统时区")
+            self._logger.warning("未安装 pytz，无法设置时区，使用系统时区")
             self._tz = None
         except Exception as e:
             self._logger.warning(f"设置时区失败: {e}，使用系统时区")
@@ -379,19 +383,7 @@ class Scheduler:
     def list_all_jobs(self) -> list:
         """列出所有任务的详细信息"""
         return [self.get_job_info(job_id) for job_id in self._jobs.keys()]
-    
-    def pause_job(self, job_id: str) -> bool:
-        """暂停任务（暂不支持，返回 False）"""
-        # TODO: 实现任务暂停功能
-        self._logger.warning(f"暂停任务功能暂未实现: {job_id}")
-        return False
-    
-    def resume_job(self, job_id: str) -> bool:
-        """恢复任务（暂不支持，返回 False）"""
-        # TODO: 实现任务恢复功能
-        self._logger.warning(f"恢复任务功能暂未实现: {job_id}")
-        return False
-    
+       
     def is_enabled(self) -> bool:
         """检查调度器是否启用"""
         return self._enabled
@@ -403,8 +395,161 @@ class Scheduler:
             'timezone': self._timezone,
             'max_workers': self._max_workers,
             'running': self._running,
-            'job_count': len(self._jobs)
+            'job_count': len(self._jobs),
+            'scheduled_job_count': len(self._scheduled_jobs)
         }
+    
+    def add_scheduled_job(
+        self,
+        job: 'ScheduledJob',
+        job_id: Optional[str] = None
+    ) -> str:
+        """
+        添加 ScheduledJob 对象到调度器
+        
+        Args:
+            job: ScheduledJob 对象
+            job_id: 任务ID，如果为 None 则自动生成
+            
+        Returns:
+            str: 任务ID
+        """
+        from ..jobs.scheduled_job import ScheduledJob as ScheduledJobClass
+        
+        if not isinstance(job, ScheduledJobClass):
+            raise TypeError(f"job 必须是 ScheduledJob 的实例，当前类型: {type(job)}")
+        
+        if job.trigger is None:
+            raise ValueError("ScheduledJob 必须设置 trigger 属性")
+        
+        # 生成任务ID
+        if job_id is None:
+            job_id = f"scheduled_{job.name}_{id(job)}"
+        
+        # 保存 ScheduledJob 对象
+        self._scheduled_jobs[job_id] = job
+        job.job_id = job_id
+        
+        # 转换触发器格式并添加到调度器
+        trigger = job.trigger
+        
+        if isinstance(trigger, str):
+            # 字符串视为 cron 表达式
+            self.add_cron_job(
+                func=job.execute,
+                cron=trigger,
+                job_id=job_id,
+                name=job.name
+            )
+        elif isinstance(trigger, dict):
+            trigger_type = trigger.get('type')
+            if trigger_type == 'cron':
+                self.add_cron_job(
+                    func=job.execute,
+                    cron=trigger['cron'],
+                    job_id=job_id,
+                    name=job.name
+                )
+            elif trigger_type == 'interval':
+                interval = trigger.get('seconds', 0) or 0
+                interval += (trigger.get('minutes', 0) or 0) * 60
+                interval += (trigger.get('hours', 0) or 0) * 3600
+                interval += (trigger.get('days', 0) or 0) * 86400
+                if interval <= 0:
+                    raise ValueError("间隔时间必须大于 0")
+                self.add_interval_job(
+                    func=job.execute,
+                    interval=interval,
+                    job_id=job_id,
+                    name=job.name
+                )
+            elif trigger_type == 'date':
+                self.add_date_job(
+                    func=job.execute,
+                    run_date=trigger['run_date'],
+                    job_id=job_id,
+                    name=job.name
+                )
+            else:
+                raise ValueError(f"不支持的触发器类型: {trigger_type}")
+        else:
+            raise ValueError(f"不支持的触发器类型: {type(trigger)}")
+        
+        self._logger.info(f"已添加 ScheduledJob: {job.name} (ID: {job_id})")
+        return job_id
+    
+    def get_scheduled_job(self, job_id: str) -> Optional['ScheduledJob']:
+        """
+        获取 ScheduledJob 对象
+        
+        Args:
+            job_id: 任务ID
+            
+        Returns:
+            ScheduledJob 对象，如果不存在则返回 None
+        """
+        return self._scheduled_jobs.get(job_id)
+    
+    def get_all_scheduled_jobs(self) -> list:
+        """
+        获取所有 ScheduledJob 对象
+        
+        Returns:
+            ScheduledJob 对象列表
+        """
+        return list(self._scheduled_jobs.values())
+    
+    def add_job_object(
+        self,
+        job: 'ScheduledJob',
+        job_id: Optional[str] = None
+    ) -> str:
+        """
+        添加 ScheduledJob 对象到调度器（不设置触发器，用于非定时任务）
+        
+        此方法用于添加不需要定时执行的任务，仅用于状态跟踪和管理。
+        如果需要定时执行，请使用 add_scheduled_job() 并设置 trigger。
+        
+        Args:
+            job: ScheduledJob 对象
+            job_id: 任务ID，如果为 None 则自动生成
+            
+        Returns:
+            str: 任务ID
+        """
+        from ..jobs.scheduled_job import ScheduledJob as ScheduledJobClass
+        
+        if not isinstance(job, ScheduledJobClass):
+            raise TypeError(f"job 必须是 ScheduledJob 的实例，当前类型: {type(job)}")
+        
+        # 生成任务ID
+        if job_id is None:
+            job_id = f"job_{job.name}_{id(job)}"
+        
+        # 保存 ScheduledJob 对象
+        self._scheduled_jobs[job_id] = job
+        job.job_id = job_id
+        
+        self._logger.info(f"已添加任务对象: {job.name} (ID: {job_id})")
+        return job_id
+    
+    def remove_scheduled_job(self, job_id: str) -> bool:
+        """
+        移除 ScheduledJob
+        
+        Args:
+            job_id: 任务ID
+            
+        Returns:
+            是否成功移除
+        """
+        if job_id in self._scheduled_jobs:
+            # 同时从调度器中移除（如果存在）
+            self.remove_job(job_id)
+            del self._scheduled_jobs[job_id]
+            self._logger.info(f"已移除 ScheduledJob: {job_id}")
+            return True
+        return False
 
 
 # 全局调度器实例

@@ -204,7 +204,7 @@ class ApiClient:
             
             # 创建示例定时任务
             job_content = '''"""定时任务示例"""
-from myboot.jobs.decorators import cron
+from myboot.core.decorators import cron
 
 
 @cron("0 */5 * * * *")  # 每5分钟执行一次

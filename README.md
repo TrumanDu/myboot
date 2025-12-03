@@ -1276,43 +1276,47 @@ def create_task(data: dict):
     return {"message": "任务已创建，正在后台处理"}
 ```
 
-#### 使用任务管理器
+#### 使用 ScheduledJob
 
 对于需要跟踪任务状态的场景：
 
 ```python
 from myboot.core.decorators import post, get, rest_controller
-from myboot.jobs.manager import JobManager
-from myboot.jobs.job import FunctionJob
+from myboot.jobs.scheduled_job import ScheduledJob
+from myboot.core.scheduler import get_scheduler
 import threading
-
-def generate_report(report_type: str):
-    """生成报告任务"""
-    import time
-    print(f"开始生成 {report_type} 报告")
-    time.sleep(10)  # 模拟报告生成
-    return {"type": report_type, "status": "completed"}
 
 @rest_controller('/api/reports')
 class ReportController:
     """报告控制器"""
 
     def __init__(self):
-        self.job_manager = JobManager()
+        self.scheduler = get_scheduler()
 
     @post('/generate')
     def create_report(self, report_type: str):
         """创建报告生成任务"""
-        # 创建任务
-        job = FunctionJob(
-            func=generate_report,
-            name=f"生成{report_type}报告",
-            args=(report_type,),
-            timeout=300  # 5分钟超时
-        )
+        # 创建自定义 ScheduledJob
+        class ReportJob(ScheduledJob):
+            def __init__(self, report_type: str):
+                super().__init__(
+                    name=f"生成{report_type}报告",
+                    timeout=300  # 5分钟超时
+                )
+                self.report_type = report_type
+            
+            def run(self, *args, **kwargs):
+                """生成报告任务"""
+                import time
+                print(f"开始生成 {self.report_type} 报告")
+                time.sleep(10)  # 模拟报告生成
+                return {"type": self.report_type, "status": "completed"}
 
-        # 添加到任务管理器并执行
-        job_id = self.job_manager.add_job(job)
+        # 创建任务实例
+        job = ReportJob(report_type)
+        
+        # 添加到调度器（用于状态跟踪，非定时任务）
+        job_id = self.scheduler.add_job_object(job)
         thread = threading.Thread(target=job.execute)
         thread.daemon = True
         thread.start()
@@ -1322,8 +1326,10 @@ class ReportController:
     @get('/status/{job_id}')
     def get_status(self, job_id: str):
         """查询任务状态"""
-        job_info = self.job_manager.get_job_info(job_id)
-        return job_info if job_info else {"error": "任务不存在"}
+        job = self.scheduler.get_scheduled_job(job_id)
+        if job:
+            return job.get_info()
+        return {"error": "任务不存在"}
 ```
 
 更多详细内容请参考 [REST API 异步任务文档](docs/rest-api-async-tasks.md)。
@@ -1354,42 +1360,45 @@ if app.scheduler.is_enabled():
     print("调度器已启用")
 ```
 
-#### 任务管理器
+#### 使用 ScheduledJob 管理任务
 
 ```python
-from myboot.jobs.manager import JobManager
-from myboot.jobs.job import FunctionJob
+from myboot.jobs.scheduled_job import ScheduledJob
+from myboot.core.scheduler import get_scheduler
 import threading
 
-# 获取任务管理器（单例模式）
-job_manager = JobManager()
+# 获取调度器
+scheduler = get_scheduler()
 
-# 添加任务
-def my_task(data: dict):
-    """任务函数"""
-    print(f"处理数据: {data}")
-    return {"status": "completed", "data": data}
+# 创建自定义 ScheduledJob
+class MyTask(ScheduledJob):
+    def __init__(self, data: dict):
+        super().__init__(name="my_task")
+        self.data = data
+    
+    def run(self, *args, **kwargs):
+        """任务函数"""
+        print(f"处理数据: {self.data}")
+        return {"status": "completed", "data": self.data}
 
-job = FunctionJob(func=my_task, name="my_task", args=({"key": "value"},))
-job_id = job_manager.add_job(job)
+# 创建任务实例
+job = MyTask({"key": "value"})
 
-# 执行任务（根据任务ID）
-result = job_manager.execute_job(job_id, {"key": "value"})
+# 对于非定时任务，可以直接执行
+# 如果需要跟踪状态，可以添加到调度器
+job_id = scheduler.add_job_object(job)
 
-# 或者根据名称执行任务
-result = job_manager.execute_job_by_name("my_task", {"key": "value"})
+# 执行任务
+result = job.execute()
 
-# 获取任务状态（需要任务ID）
-status = job_manager.get_job_status(job_id)
+# 获取任务状态
+status = job.status
 
-# 获取任务信息（需要任务ID）
-job_info = job_manager.get_job_info(job_id)
+# 获取任务信息
+job_info = job.get_info()
 
-# 列出所有任务信息
-all_jobs = job_manager.get_all_job_info()
-
-# 获取任务统计
-statistics = job_manager.get_job_statistics()
+# 获取所有 ScheduledJob 信息
+all_jobs = [job.get_info() for job in scheduler.get_all_scheduled_jobs()]
 
 # 在后台执行任务
 thread = threading.Thread(target=job.execute)

@@ -18,8 +18,8 @@ from myboot.core.decorators import (
     service, client, middleware,
     rest_controller
 )
-from myboot.jobs.job import FunctionJob
-from myboot.jobs.manager import JobManager
+from myboot.jobs.scheduled_job import ScheduledJob
+from myboot.core.scheduler import get_scheduler
 
 # 添加项目根目录到 Python 路径
 project_root = Path(__file__).parent.parent
@@ -249,7 +249,7 @@ def delete_user(user_id: int):
 
 # ==================== 定时任务 ====================
 
-@cron('0 */1 * * * *', enabled=False)  # 每分钟执行
+@cron('0 */1 * * * *', enabled=True)  # 每分钟执行
 def heartbeat():
     """心跳任务 - 自动注册"""
     print("💓 心跳检测 - 系统运行正常")
@@ -340,21 +340,28 @@ class ReportController:
     """报告控制器"""
 
     def __init__(self):
-        self.job_manager = JobManager()
+        self.scheduler = get_scheduler()
 
     @post('/generate')
     def create_report(self, report_type: str):
         """创建报告生成任务"""
-        # 创建任务
-        job = FunctionJob(
-            func=generate_report,
-            name=f"生成{report_type}报告",
-            args=(report_type,),
-            timeout=300  # 5分钟超时
-        )
-
-        # 添加到任务管理器并执行
-        job_id = self.job_manager.add_job(job)
+        # 创建自定义 ScheduledJob
+        class ReportJob(ScheduledJob):
+            def __init__(self, report_type: str):
+                super().__init__(
+                    name=f"生成{report_type}报告",
+                    timeout=300  # 5分钟超时
+                )
+                self.report_type = report_type
+            
+            def run(self, *args, **kwargs):
+                return generate_report(self.report_type)
+        
+        # 创建任务实例
+        job = ReportJob(report_type)
+        
+        # 添加到调度器并执行
+        job_id = self.scheduler.add_scheduled_job(job)
         thread = threading.Thread(target=job.execute)
         thread.daemon = True
         thread.start()
@@ -364,8 +371,10 @@ class ReportController:
     @get('/status/{job_id}')
     def get_status(self, job_id: str):
         """查询任务状态"""
-        job_info = self.job_manager.get_job_info(job_id)
-        return job_info if job_info else {"error": "任务不存在"}
+        job = self.scheduler.get_scheduled_job(job_id)
+        if job:
+            return job.get_info()
+        return {"error": "任务不存在"}
 
 
 # ==================== 启动钩子 ====================

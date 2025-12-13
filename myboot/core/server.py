@@ -50,7 +50,7 @@ class HypercornServer:
             
             # 应用其他配置
             for key, value in self.kwargs.items():
-                if hasattr(config, key) and key not in ['reload', 'workers']:
+                if hasattr(config, key) and key not in ['reload']:
                     setattr(config, key, value)
             
             self._running = True

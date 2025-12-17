@@ -338,6 +338,17 @@ class Application:
 
     def _register_exception_handlers(self, app: FastAPI) -> None:
         """注册异常处理器"""
+        
+        def _extract_error_messages(errors: list) -> list:
+            """从错误列表中提取错误消息"""
+            messages = []
+            for error in errors:
+                msg = error.get('msg', 'Validation Error')
+                # 移除 "Value error, " 前缀
+                if msg.startswith('Value error, '):
+                    msg = msg[len('Value error, '):]
+                messages.append(msg)
+            return messages
 
         @app.exception_handler(MyBootException)
         async def myboot_exception_handler(request: Request, exc: MyBootException):
@@ -370,16 +381,23 @@ class Application:
 
         @app.exception_handler(RequestValidationError)
         async def validation_exception_handler(request: Request, exc: RequestValidationError):
-            """请求验证异常处理器"""
-            self.logger.warning(f"请求验证失败: {exc.errors()}")
+            """请求验证异常处理器 - 返回友好的错误信息"""
+            errors = exc.errors()
+            # 只提取错误消息
+            error_messages = _extract_error_messages(errors)
+            
+            # 使用第一个错误消息作为主要错误信息
+            error_msg = error_messages[0] if error_messages else 'Validation Error'
+            
+            self.logger.warning(f"请求验证失败: {error_messages}")
             return JSONResponse(
                 status_code=422,
                 content={
                     "success": False,
                     "code": 422,
-                    "message": "Validation Error",
+                    "message": error_msg,
                     "data": {
-                        "fieldErrors": exc.errors()
+                        "fieldErrors": error_messages
                     }
                 }
             )

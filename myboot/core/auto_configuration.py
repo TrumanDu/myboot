@@ -451,7 +451,7 @@ class AutoConfigurationManager:
         """自动注册路由"""
         for route_info in self.discovered_components['routes']:
             try:
-                if route_info['type'] == 'function_route':
+                if route_info['type'].startswith('function_'):
                     # 函数路由
                     func = route_info['function']
                     route_config = getattr(func, '__myboot_route__')
@@ -461,7 +461,7 @@ class AutoConfigurationManager:
                         methods=route_config.get('methods', ['GET']),
                         **route_config.get('kwargs', {})
                     )
-                elif route_info['type'] == 'class_route':
+                elif route_info['type'].startswith('class_'):
                     # 类路由
                     cls = route_info['class']
                     route_config = getattr(cls, '__myboot_route__')

@@ -102,14 +102,14 @@ if __name__ == "__main__":
         if template in ['api', 'full']:
             # 创建示例路由
             api_content = '''"""API 路由示例"""
-from myboot.core.decorators import get
+from myboot.core.decorators import route
 
-@get("/")
+@route("/")
 def hello():
     """Hello World 接口"""
     return {"message": "Hello, MyBoot!", "status": "success"}
 
-@get("/health")
+@route("/health")
 def health():
     """健康检查接口"""
     return {"status": "healthy", "service": "running"}

@@ -16,8 +16,19 @@ from loguru import logger
 
 from ..utils import get_local_ip
 
+# 别名映射：调用方传入的名称 → Hypercorn Config 属性名
+# application.py 白名单已处理大部分别名，此处仅保留通用兜底映射
+# 参考：https://hypercorn.readthedocs.io/en/latest/how_to_guides/configuring.html
+HYPERCORN_CONFIG_ALIASES: Dict[str, str] = {
+    "reload": "use_reloader",
+    "max_incomplete_request_size": "h11_max_incomplete_size",
+}
 
-def _create_socket_with_reuseport(host: str, port: int) -> socket.socket:
+# myboot 内部消耗、不传给 Hypercorn 的键
+_MYBOOT_INTERNAL = {"host", "port", "app_path"}
+
+
+def _create_socket_with_reuseport(host: str, port: int, backlog: int = 100) -> socket.socket:
     """
     创建启用 SO_REUSEPORT 的 socket（仅 Linux/macOS）
     
@@ -37,8 +48,7 @@ def _create_socket_with_reuseport(host: str, port: int) -> socket.socket:
     
     sock.setblocking(False)
     sock.bind((host, port))
-    sock.listen(100)  # backlog
-    
+    sock.listen(backlog)
     return sock
 
 
@@ -167,33 +177,29 @@ class HypercornServer:
             raise ImportError("Hypercorn 未安装，请运行: pip install hypercorn")
     
     def _build_config(self) -> Any:
-        """构建 Hypercorn 配置"""
+        """构建 Hypercorn Config：将 kwargs 通过别名映射写入 Config 属性。"""
         config = self._config_class()
         config.bind = [f"{self.host}:{self.port}"]
-        config.use_reloader = self.kwargs.get('reload', False)
-        config.workers = self.kwargs.get('workers', 1)
-        config.keep_alive_timeout = self.kwargs.get('keep_alive_timeout', 5)
-        config.graceful_timeout = self.kwargs.get('graceful_timeout', 30)
-        config.max_incomplete_request_size = self.kwargs.get('max_incomplete_request_size', 16 * 1024)
-        config.websocket_max_size = self.kwargs.get('websocket_max_size', 16 * 1024 * 1024)
-        
-        # 应用其他配置
         for key, value in self.kwargs.items():
-            if hasattr(config, key) and key not in ['reload', 'workers']:
-                setattr(config, key, value)
-        
+            if key in _MYBOOT_INTERNAL:
+                continue
+            hypercorn_key = HYPERCORN_CONFIG_ALIASES.get(key, key)
+            if hasattr(config, hypercorn_key):
+                setattr(config, hypercorn_key, value)
         return config
-    
+
     def _config_to_dict(self, config) -> dict:
-        """将配置转换为可序列化的字典"""
-        return {
-            'bind': config.bind,
-            'use_reloader': config.use_reloader,
-            'keep_alive_timeout': config.keep_alive_timeout,
-            'graceful_timeout': config.graceful_timeout,
-            'max_incomplete_request_size': getattr(config, 'max_incomplete_request_size', 16 * 1024),
-            'websocket_max_size': getattr(config, 'websocket_max_size', 16 * 1024 * 1024),
-        }
+        """将 Hypercorn Config 序列化为字典，供多 worker 子进程重建使用。"""
+        out = {}
+        for attr in dir(config):
+            if attr.startswith("_"):
+                continue
+            val = getattr(config, attr, None)
+            if callable(val):
+                continue
+            if isinstance(val, (str, int, float, bool, list, dict, type(None))):
+                out[attr] = val
+        return out
     
     def start(self, app_path: Optional[str] = None) -> None:
         """
@@ -248,9 +254,10 @@ class HypercornServer:
         shared_socket: Optional[socket.socket] = None
         
         # Linux/macOS: 使用 SO_REUSEPORT 预创建 socket，允许多个进程绑定同一端口
+        backlog = config_dict.get("backlog", 100)
         if sys.platform != 'win32':
             try:
-                shared_socket = _create_socket_with_reuseport(self.host, self.port)
+                shared_socket = _create_socket_with_reuseport(self.host, self.port, backlog=backlog)
                 socket_fd = shared_socket.fileno()
                 logger.info(f"已创建共享 socket (fd={socket_fd}), 启用 SO_REUSEPORT")
             except Exception as e:

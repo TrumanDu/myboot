@@ -491,6 +491,17 @@ class Application:
         workers = self.config.get("server.workers", workers)
         app_path = self.config.get("server.app_path", app_path)
 
+        # 白名单方式收集 server.* 中的 Hypercorn 配置
+        # 别名转换（如 max_incomplete_request_size）由 server.py 的 HYPERCORN_CONFIG_ALIASES 统一处理
+        server_section = self.config.get("server") or {}
+        server_kwargs = {}
+        for k in ("backlog", "read_timeout", "keep_alive_timeout", "graceful_timeout",
+                   "reloader", "use_reloader", "max_incomplete_request_size"):
+            if k in server_section:
+                server_kwargs[k] = server_section[k]
+        # 合并：配置文件 < run(**kwargs) 覆盖
+        run_kwargs = {**server_kwargs, **kwargs}
+
         # 自动发现和配置
         if self.auto_configuration_enabled:
             self.logger.info("🔍 开始自动发现组件...")
@@ -522,7 +533,7 @@ class Application:
                 reload=reload,
                 workers=workers,
                 app_path=app_path,
-                **kwargs
+                **run_kwargs
             )
         except KeyboardInterrupt:
             self.logger.info("收到中断信号，正在关闭...")

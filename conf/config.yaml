@@ -8,9 +8,9 @@ app:
 # 服务器配置
 server:
   port: 8000
-  reload: true
+  reload: false
   workers: 1
-  keep_alive_timeout: 5
+  keep_alive_timeout: 60
   graceful_timeout: 30
   # CORS 配置（可选，如果不存在则不启用 CORS）
   cors:

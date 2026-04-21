@@ -24,6 +24,12 @@ HYPERCORN_CONFIG_ALIASES: Dict[str, str] = {
     "max_incomplete_request_size": "h11_max_incomplete_size",
 }
 
+# 序列化 Config 到子进程时跳过：只读或由其他字段推导，子进程 asyncio.serve() 不需/不应重设
+_HYPERCORN_SERIALIZE_SKIP = frozenset({
+    "ssl_enabled",  # Hypercorn：只读，由 certfile/keyfile 推导
+    "workers",      # asyncio.serve() 不用此字段；多进程由外层 fork
+})
+
 # myboot 内部消耗、不传给 Hypercorn 的键
 _MYBOOT_INTERNAL = {"host", "port", "app_path"}
 
@@ -193,6 +199,8 @@ class HypercornServer:
         out = {}
         for attr in dir(config):
             if attr.startswith("_"):
+                continue
+            if attr in _HYPERCORN_SERIALIZE_SKIP:
                 continue
             val = getattr(config, attr, None)
             if callable(val):

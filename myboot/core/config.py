@@ -60,9 +60,13 @@ def _download_config(url: str, cache_dir: str) -> str:
 
 
 def _get_config_files(config_file: Optional[str] = None) -> list:
-    """获取配置文件列表，按优先级排序
-    
-    优先级：环境变量 > 参数指定 > 项目根目录/conf > 项目根目录 
+    """获取配置文件列表（供 Dynaconf ``settings_files`` 使用）。
+
+    Dynaconf 按列表顺序依次加载，**后加载的文件会覆盖先加载的同名字段**。
+    因此列表顺序为「基底 → 越来越高优先级」，而不是把「最重要」的文件放在最前。
+
+    合并结果上的优先级（后者覆盖前者）：
+    项目根目录 ``config.yaml`` < ``conf/config.yaml`` < 参数 ``config_file`` < 环境变量 ``CONFIG_FILE``
     """
     project_root = _find_project_root()
     cache_dir = os.path.join(tempfile.gettempdir(), 'myboot_config_cache')
@@ -71,21 +75,18 @@ def _get_config_files(config_file: Optional[str] = None) -> list:
     config_files = []
     added_paths = set()  # 用于去重
     
-    # 查找配置文件，优先级：环境变量 > 参数指定 > 项目根目录/conf > 项目根目录 
+    # 与 Dynaconf 加载顺序一致：靠前的先加载（作默认），靠后的覆盖同名键
     config_paths = [
-        # 1. 环境变量指定（最高优先级）
-        os.getenv('CONFIG_FILE'),
-        
-        # 2. 参数指定的配置文件
-        config_file,
-        
-        # 3. 项目根目录/conf/config.yaml 和 config.yml
+        # 1. 项目根目录（最先加载）
+        os.path.join(project_root, 'config.yaml'),
+        os.path.join(project_root, 'config.yml'),
+        # 2. conf 目录
         os.path.join(project_root, 'conf', 'config.yaml'),
         os.path.join(project_root, 'conf', 'config.yml'),
-        
-        # 4. 项目根目录配置文件
-        os.path.join(project_root, 'config.yaml'),
-        os.path.join(project_root,  'config.yml'),
+        # 3. 调用方显式传入
+        config_file,
+        # 4. CONFIG_FILE 环境变量（最后加载，覆盖上述来源中的同名字段）
+        os.getenv('CONFIG_FILE'),
     ]
     
     for config_path in config_paths:

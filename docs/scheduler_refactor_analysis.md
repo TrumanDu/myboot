@@ -1,5 +1,7 @@
 # 调度器重构可行性分析：使用 APScheduler
 
+> **使用说明**：日常开发与配置 Cron/间隔任务请参阅 [scheduler.md](./scheduler.md)。
+
 ## 1. 当前实现分析
 
 ### 1.1 现有功能

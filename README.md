@@ -12,7 +12,7 @@ MyBoot 是一个功能丰富的 Python Web 框架，提供类似 Spring Boot 的
 - 🎯 **约定优于配置**: 遵循约定，减少配置工作，自动发现和注册组件
 - 🌐 **Web API**: 基于 FastAPI 的高性能 Web API 开发
 - ⚡ **高性能服务器**: 默认使用 Hypercorn 服务器，支持 HTTP/2 和多进程
-- ⏰ **定时任务**: 强大的任务调度系统，支持 Cron 表达式和间隔任务
+- ⏰ **定时任务**: 强大的任务调度系统，支持 Cron 表达式和间隔任务（详见 [任务调度器使用说明](docs/scheduler.md)）
 - 📝 **日志管理**: 基于 loguru 的强大日志系统，支持结构化日志和第三方库日志控制
 - ⚙️ **配置管理**: 基于 Dynaconf 的强大配置系统，支持 YAML 配置、环境变量覆盖和远程配置
 - 🔧 **中间件支持**: 丰富的中间件生态，包括 CORS、限流、安全等
@@ -358,7 +358,7 @@ class UserController:
 
 - **服务命名**: 类名自动转换为下划线分隔的小写形式作为服务名（如 `UserService` → `user_service`）
 - **路由映射**: 使用 `@rest_controller` 装饰器定义路由，方法装饰器 `@get`、`@post` 等定义具体端点
-- **任务调度**: 在 `@component` 类中使用 `@cron`、`@interval`、`@once` 装饰器
+- **任务调度**: 在 `@component` 类中使用 `@cron`、`@interval`、`@once` 装饰器（详见 [任务调度器使用说明](docs/scheduler.md)）
 - **组件扫描**: 自动扫描指定包中的所有组件
 
 ## ⚡ 高性能服务器
@@ -493,6 +493,7 @@ export LOGGING__LEVEL=DEBUG
 - [📚 完整文档](docs/README.md) - 文档中心
 - [⚡ REST API 异步任务](docs/rest-api-async-tasks.md) - REST API 中使用异步任务指南
 - [🔧 依赖注入](docs/dependency-injection.md) - 依赖注入使用指南
+- [⏰ 任务调度器](docs/scheduler.md) - Cron / 间隔 / 一次性任务与配置说明
 
 ### 1. Web API 开发
 
@@ -758,7 +759,7 @@ class UserController:
 
 ### 2. 定时任务
 
-**重要**：定时任务必须在 `@component` 装饰的类中定义，支持依赖注入。
+**重要**：定时任务必须在 `@component` 装饰的类中定义，支持依赖注入。完整说明见 [任务调度器使用说明](docs/scheduler.md)。
 
 #### Cron 表达式任务
 
@@ -902,6 +903,8 @@ port = app.config.get("server.port", 8000)
 ```
 
 #### 调度器配置
+
+Cron 表达式格式、星期字段含义及多 Worker 行为见 [任务调度器使用说明](docs/scheduler.md)。
 
 ```yaml
 # 任务调度配置
@@ -1342,6 +1345,8 @@ class ReportController:
 ### 3. 任务管理
 
 #### 调度器任务管理
+
+更多 API 与排查说明见 [任务调度器使用说明](docs/scheduler.md)。
 
 ```python
 # 获取调度器配置

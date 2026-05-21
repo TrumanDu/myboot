@@ -45,7 +45,7 @@ class DataSyncJobs:
 
 ## 2. 配置
 
-在 `config.yaml` 或环境变量中配置（环境变量嵌套键使用双下划线 `__`，见 [配置说明](../myboot/core/config.py) 中 `envvar_separator`）。
+在 `config.yaml` 或环境变量中配置（环境变量嵌套键使用双下划线 `__`，详见 [配置管理使用说明](./configuration.md)）。
 
 ```yaml
 scheduler:

@@ -14,7 +14,7 @@ MyBoot 是一个功能丰富的 Python Web 框架，提供类似 Spring Boot 的
 - ⚡ **高性能服务器**: 默认使用 Hypercorn 服务器，支持 HTTP/2 和多进程
 - ⏰ **定时任务**: 强大的任务调度系统，支持 Cron 表达式和间隔任务（详见 [任务调度器使用说明](docs/scheduler.md)）
 - 📝 **日志管理**: 基于 loguru 的强大日志系统，支持结构化日志和第三方库日志控制
-- ⚙️ **配置管理**: 基于 Dynaconf 的强大配置系统，支持 YAML 配置、环境变量覆盖和远程配置
+- ⚙️ **配置管理**: 基于 Dynaconf 的强大配置系统，支持 YAML 配置、环境变量覆盖和远程配置（详见 [配置管理使用说明](docs/configuration.md)）
 - 🔧 **中间件支持**: 丰富的中间件生态，包括 CORS、限流、安全等
 - 📊 **健康检查**: 内置健康检查、就绪检查和存活检查
 - 🎯 **依赖注入**: 简单的依赖注入和组件管理
@@ -395,7 +395,7 @@ app.run(host="0.0.0.0", port=8000, workers=4)
 
 ## ⚙️ 配置管理
 
-MyBoot 使用 Dynaconf 提供强大的配置管理功能：
+MyBoot 使用 Dynaconf 提供强大的配置管理功能。完整说明（文件优先级、环境变量 `__` 规则、常用配置项）见 [配置管理使用说明](docs/configuration.md)。
 
 ### 基本使用
 
@@ -494,6 +494,7 @@ export LOGGING__LEVEL=DEBUG
 - [⚡ REST API 异步任务](docs/rest-api-async-tasks.md) - REST API 中使用异步任务指南
 - [🔧 依赖注入](docs/dependency-injection.md) - 依赖注入使用指南
 - [⏰ 任务调度器](docs/scheduler.md) - Cron / 间隔 / 一次性任务与配置说明
+- [⚙️ 配置管理](docs/configuration.md) - YAML、环境变量、远程配置与优先级
 
 ### 1. Web API 开发
 
@@ -835,6 +836,8 @@ class DataSyncJobs:
 ```
 
 ### 3. 配置管理
+
+文件合并顺序、环境变量命名与 API 说明见 [配置管理使用说明](docs/configuration.md)。
 
 #### 配置文件 (config.yaml)
 

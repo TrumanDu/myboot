@@ -239,7 +239,42 @@ flowchart LR
 | 嵌套分隔符   | **双下划线 `__`**，对应 YAML 中的层级                       |
 | 单下划线 `_` | 仅作为**同一层键名**的一部分（如 `keep_alive_timeout`）     |
 | 类型         | `env_parse_values=True`，自动尝试解析布尔、数字等           |
-| 未知变量     | `ignore_unknown_envvars=True`，忽略未映射到配置的环境变量   |
+| 未知变量     | `ignore_unknown_envvars=True`，**仅当该键已在配置树中存在时**才接受环境变量覆盖（见下） |
+
+#### 已知键限制（`ignore_unknown_envvars=True`）
+
+MyBoot 在 `config.py` 中启用了 `ignore_unknown_envvars=True`。环境变量（含 `.env` 加载进 `os.environ` 的项）**不会**凭空新增配置项，只能**覆盖**下列来源里**已经出现过**的键路径：
+
+1. 已加载的 YAML（`config.yaml`、`conf/config.yaml`、`CONFIG_FILE` 等）
+2. `config.py` 中 `default_settings` 内置项（如 `app.name`、`server.port`、`logging.level`、`scheduler.timezone` 等）
+
+因此：
+
+- ✅ `SERVER__PORT=9000` 有效（`server.port` 在默认配置或 YAML 中已有）
+- ❌ `DATABASE__URL=...` **无效**，若 YAML / 默认配置里**没有** `database` 段——变量会进入 `os.environ`，但 **MyBoot 不会读入** `get_config("database.url")`
+- ❌ 任意「只在 `.env` 里出现、YAML 从未声明」的键都会被**静默忽略**
+
+**正确做法**：需要靠 `.env` 注入的新配置，先在 YAML 中**声明结构**（值可写占位符），再用环境变量覆盖：
+
+```yaml
+# conf/config.yaml — 先声明键结构
+database:
+  url: ""          # 占位，真实值放在 .env / .local.env
+app:
+  secret_key: ""   # 敏感项同理
+jobs:
+  cleanup_task:
+    enabled: true
+```
+
+```bash
+# .local.env — 再覆盖
+DATABASE__URL=postgresql://user:pass@127.0.0.1:5432/mydb
+APP__SECRET_KEY=your-local-secret-key
+JOBS__CLEANUP_TASK__ENABLED=false
+```
+
+若希望环境变量**无需**在 YAML 预声明即可生效，需修改 `myboot/core/config.py` 将 `ignore_unknown_envvars` 设为 `False`（当前框架默认未开启）。
 
 ### 5.2 示例
 
@@ -269,6 +304,8 @@ export SCHEDULER__TIMEZONE=Asia/Shanghai
 MyBoot **不会**自动读取项目根目录的 `.env` 文件（`config.py` 未启用 Dynaconf 的 `load_dotenv`）。
 
 `.env` 要生效，必须先把其中的键值加载进 **`os.environ`**（通常用 `python-dotenv`，项目依赖中已包含）。之后 Dynaconf 会像读取普通环境变量一样合并进配置，**优先级高于 YAML**。
+
+同时受 **`ignore_unknown_envvars=True`** 约束：`.env` 里的变量名必须对应 **YAML 或内置默认配置中已声明过的键路径**，否则不会进入 `get_config()`（见上文 **5.1 已知键限制**）。
 
 ```mermaid
 flowchart LR
@@ -316,12 +353,15 @@ if __name__ == "__main__":
 | 模块级 `get_config` | 其他文件若在 import 时调用 `get_config()`，也需保证入口已先 `load_dotenv` |
 | 修改 `.env` 后      | 需**重启进程**；不会热更新                                                |
 | 版本控制            | `.env`、`.local.env` 加入 `.gitignore`；可提交 `.env.example` 作模板      |
+| 键必须已声明        | `.env` 中每一项都须在 YAML（或 `default_settings`）中有对应路径，见 5.1   |
 
 若使用 Uvicorn/Hypercorn 命令行启动（`uvicorn main:app`），只要 **`main` 模块被加载时会执行上述 `load_dotenv`**（写在 `main.py` 顶层即可）。
 
 ### 5.6 `.env` 文件如何书写
 
 `.env` 使用 **dotenv 格式**（不是 YAML）：每行 `键=值`，`#` 开头为注释。**不要**写 `export`（那是 shell 脚本写法）。
+
+> **重要**：`.env` 只用于**覆盖**已有配置键，不能代替 YAML 做「首次声明」。未在 YAML / `default_settings` 中出现的键（如仅写 `DATABASE__URL` 而 `config.yaml` 里没有 `database.url`）将被忽略。
 
 #### 命名规则（与 MyBoot 一致）
 
@@ -352,11 +392,13 @@ SCHEDULER__TIMEZONE=Asia/Shanghai
 
 #### 示例 `.local.env`（敏感信息，勿提交 Git）
 
+以下变量均要求 `conf/config.yaml`（或根目录 `config.yaml`）中**已有同名路径**；示例见上一节 YAML 占位声明。
+
 ```bash
-# 覆盖 .env 中的端口（可选）
+# 覆盖 .env 中的端口（server.port 已在 YAML/默认配置中存在）
 SERVER__PORT=9000
 
-# 数据库、密钥等
+# 以下键须先在 YAML 中声明 database.url、app.secret_key
 DATABASE__URL=postgresql://user:password@127.0.0.1:5432/mydb
 APP__SECRET_KEY=your-local-secret-key
 ```
@@ -367,7 +409,7 @@ APP__SECRET_KEY=your-local-secret-key
 | ------------------------------------- | --------------------------- | ----------------------------------------- |
 | `SERVER__PORT=9000`                   | `server.port`               | `get_config("server.port")`               |
 | `LOGGING__LEVEL=DEBUG`                | `logging.level`             | `get_config("logging.level")`             |
-| `DATABASE__URL=...`                   | `database.url`              | `get_config("database.url")`              |
+| `DATABASE__URL=...`                   | `database.url`（**须先在 YAML 声明**） | `get_config("database.url")`              |
 | `SERVER__CORS__ALLOW_ORIGINS='["*"]'` | `server.cors.allow_origins` | `get_config("server.cors.allow_origins")` |
 
 #### 值的书写建议
@@ -400,7 +442,12 @@ export SERVER__PORT=8000
 # 错误：YAML 缩进语法不能用在 .env
 server:
   port: 8000
+
+# 错误：YAML 中未声明 database 段时，此行会被 ignore_unknown_envvars 忽略
+DATABASE__URL=postgresql://...
 ```
+
+**内置默认已存在、可直接用 `.env` 覆盖的键（无需 YAML）** 包括：`app.name`、`app.version`、`server.host`、`server.port`、`server.reload`、`server.workers`、`logging.level`、`scheduler.enabled`、`scheduler.timezone`、`scheduler.max_workers` 等，完整列表见 `myboot/core/config.py` 中 `default_settings`。
 
 #### 验证是否加载成功
 
@@ -408,11 +455,16 @@ server:
 # 在 load_dotenv 且 create_app 之后执行
 from myboot.core.config import get_config
 
+# server.port 在 YAML/默认配置中存在 → 能读到 .env 覆盖值
 print(get_config("server.port"))
-print(get_config("database.url", "(未设置)"))
+
+# database.url 仅当 YAML 中已声明 database.url 时才能读到 .env 值
+print(get_config("database.url", "(YAML 未声明或 .env 未覆盖)"))
 ```
 
-或在 shell 中确认环境变量已存在（Windows Git Bash）：
+`echo $DATABASE__URL` 能看到 shell 环境变量，但 **`get_config` 仍可能取不到**——说明键未进入 MyBoot 配置树，请检查 YAML 是否已声明该路径。
+
+或在 shell 中确认环境变量已写入（Windows Git Bash）：
 
 ```bash
 echo $SERVER__PORT
@@ -526,7 +578,7 @@ def cleanup(self):
 5. 需要切换配置源时调用 `reload_config()`，或保证在任意 `get_settings()` 之前设置好 `CONFIG_FILE`。
 6. 多文件拆分时保持「基底 → 环境专用」的加载顺序意识：后加载覆盖先加载。
 7. 多文件共用同一嵌套段（如 `server.cors`）且不想**拼接列表、保留旧子键**时，在后加载文件中对应该段添加 **`dynaconf_merge: false`**（见第 3 节）。
-8. 本地敏感项用 **`.local.env`** + `main.py` 中 `load_dotenv`（见第 5.5、5.6 节），不要写入会提交的 `config.yaml`。
+8. 本地敏感项用 **`.local.env`** + `main.py` 中 `load_dotenv`（见第 5.5、5.6 节）；敏感值放 `.env`，但**键名须先在 YAML 声明**（`ignore_unknown_envvars=True`），结构可进 `config.yaml`，秘密不进 Git。
 
 ## 10. 相关文档与代码
 

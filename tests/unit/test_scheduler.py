@@ -19,6 +19,7 @@ from apscheduler.triggers.date import DateTrigger
 from apscheduler.triggers.interval import IntervalTrigger
 
 from myboot.core.scheduler import Scheduler
+from myboot.exceptions import SchedulerError
 
 
 def make_scheduler(scheduler_config: dict = None, enabled=None) -> Scheduler:
@@ -38,6 +39,10 @@ def scheduler():
 def sample_task():
     """用于注册的示例任务函数"""
     pass
+
+
+# issue #14：默认 job_id 为 {prefix}_{模块名}.{限定名}
+SAMPLE_TASK_QUALNAME = f"{sample_task.__module__}.{sample_task.__qualname__}"
 
 
 # ---------------------------------------------------------------------------
@@ -158,15 +163,15 @@ class TestParseCron:
 class TestAddCronJob:
     def test_default_job_id_format(self, scheduler):
         job_id = scheduler.add_cron_job(sample_task, "0 2 * * *")
-        # 当前默认 job_id 格式：cron_{func.__name__}
-        assert job_id == "cron_sample_task"
+        # issue #14：0.2.0 起默认 job_id 为 cron_{模块名}.{限定名}（含类名）
+        assert job_id == f"cron_{SAMPLE_TASK_QUALNAME}"
 
     def test_explicit_job_id_used_verbatim(self, scheduler):
         job_id = scheduler.add_cron_job(sample_task, "0 2 * * *", job_id="my_job")
         assert job_id == "my_job"
         assert scheduler.get_job("my_job") is not None
         # 默认 ID 没有被注册
-        assert scheduler.get_job("cron_sample_task") is None
+        assert scheduler.get_job(f"cron_{SAMPLE_TASK_QUALNAME}") is None
 
     def test_registered_job_retrievable(self, scheduler):
         job_id = scheduler.add_cron_job(sample_task, "0 2 * * *")
@@ -185,8 +190,8 @@ class TestAddCronJob:
 class TestAddIntervalJob:
     def test_default_job_id_format(self, scheduler):
         job_id = scheduler.add_interval_job(sample_task, 60)
-        # 当前默认 job_id 格式：interval_{func.__name__}
-        assert job_id == "interval_sample_task"
+        # issue #14：0.2.0 起默认 job_id 为 interval_{模块名}.{限定名}
+        assert job_id == f"interval_{SAMPLE_TASK_QUALNAME}"
 
     def test_explicit_job_id_used_verbatim(self, scheduler):
         job_id = scheduler.add_interval_job(sample_task, 60, job_id="tick")
@@ -202,8 +207,8 @@ class TestAddIntervalJob:
 class TestAddDateJob:
     def test_default_job_id_format(self, scheduler):
         job_id = scheduler.add_date_job(sample_task, "2099-12-31 23:59:59")
-        # 当前默认 job_id 格式：date_{func.__name__}
-        assert job_id == "date_sample_task"
+        # issue #14：0.2.0 起默认 job_id 为 date_{模块名}.{限定名}
+        assert job_id == f"date_{SAMPLE_TASK_QUALNAME}"
 
     def test_explicit_job_id_used_verbatim(self, scheduler):
         job_id = scheduler.add_date_job(
@@ -233,23 +238,49 @@ class TestAddDateJob:
 
 
 class TestDuplicateRegistration:
-    def test_duplicate_default_id_does_not_raise_before_start(self, scheduler):
-        """当前行为（特征）：调度器未启动时，APScheduler 把任务放入 pending
-        队列且不做 ID 冲突检查——同名函数注册两次不抛异常，两个任务都进入
-        pending，list_jobs() 出现重复 ID。
-        （ConflictingIdError 只会在 scheduler.start() 真正落库时才抛出。）
+    def test_duplicate_auto_id_disambiguated_with_uid_suffix(self, scheduler):
+        """0.2.0（issue #14 配套）：注册时显式查重。同一函数注册两次时，
+        第二个自动生成的 ID 追加 8 位 uid 后缀消歧（并打 warning），
+        不再出现重复 ID 进入 pending 队列、延迟到 start() 才爆发的问题。
         """
         id1 = scheduler.add_cron_job(sample_task, "0 2 * * *")
         id2 = scheduler.add_cron_job(sample_task, "0 3 * * *")
-        assert id1 == id2 == "cron_sample_task"
-        assert scheduler.list_jobs() == ["cron_sample_task", "cron_sample_task"]
+        assert id1 == f"cron_{SAMPLE_TASK_QUALNAME}"
+        assert id2.startswith(f"cron_{SAMPLE_TASK_QUALNAME}_")
+        assert len(id2) == len(f"cron_{SAMPLE_TASK_QUALNAME}_") + 8
+        assert sorted(scheduler.list_jobs()) == sorted([id1, id2])
 
-    def test_remove_only_removes_first_pending_duplicate(self, scheduler):
-        """当前行为（特征）：remove_job 只移除 pending 队列中第一个匹配项"""
-        scheduler.add_cron_job(sample_task, "0 2 * * *")
-        scheduler.add_cron_job(sample_task, "0 3 * * *")
-        assert scheduler.remove_job("cron_sample_task") is True
-        assert scheduler.list_jobs() == ["cron_sample_task"]
+    def test_duplicate_explicit_id_raises_scheduler_error(self, scheduler):
+        """0.2.0（issue #14 配套）：显式传入的 job_id 已存在时抛 SchedulerError"""
+        scheduler.add_cron_job(sample_task, "0 2 * * *", job_id="my_job")
+        with pytest.raises(SchedulerError, match="my_job"):
+            scheduler.add_cron_job(sample_task, "0 3 * * *", job_id="my_job")
+        # 失败的注册不留残留
+        assert scheduler.list_jobs() == ["my_job"]
+
+    def test_same_method_name_in_different_classes_no_conflict(self, scheduler):
+        """issue #14 核心场景：两个类中的同名方法注册互不冲突"""
+
+        class AlphaJobs:
+            def job(self):
+                pass
+
+        class BetaJobs:
+            def job(self):
+                pass
+
+        id1 = scheduler.add_cron_job(AlphaJobs().job, "0 2 * * *")
+        id2 = scheduler.add_cron_job(BetaJobs().job, "0 3 * * *")
+        assert id1 != id2
+        assert "AlphaJobs.job" in id1
+        assert "BetaJobs.job" in id2
+
+    def test_remove_job_after_disambiguation(self, scheduler):
+        """消歧后两个任务可分别独立移除"""
+        id1 = scheduler.add_cron_job(sample_task, "0 2 * * *")
+        id2 = scheduler.add_cron_job(sample_task, "0 3 * * *")
+        assert scheduler.remove_job(id1) is True
+        assert scheduler.list_jobs() == [id2]
 
 
 # ---------------------------------------------------------------------------
@@ -275,19 +306,31 @@ class TestJobManagement:
         scheduler.add_cron_job(sample_task, "0 2 * * *")
         scheduler.add_interval_job(sample_task, 60)
         assert scheduler.has_jobs() is True
-        assert sorted(scheduler.list_jobs()) == [
-            "cron_sample_task",
-            "interval_sample_task",
-        ]
+        assert sorted(scheduler.list_jobs()) == sorted([
+            f"cron_{SAMPLE_TASK_QUALNAME}",
+            f"interval_{SAMPLE_TASK_QUALNAME}",
+        ])
 
-    def test_get_job_info_on_pending_job_raises_attribute_error(self, scheduler):
-        """当前行为（特征/可疑）：调度器未启动时任务处于 pending 状态，
-        Job 对象尚无 next_run_time 属性，get_job_info 访问它会抛
-        AttributeError，而不是返回信息字典。
+    def test_get_job_info_on_pending_job_returns_dict(self, scheduler):
+        """0.2.0 修复：调度器未启动时 pending Job 没有 next_run_time 属性，
+        get_job_info 现在返回信息字典（next_run_time 为 None）而不是抛
+        AttributeError。
         """
         job_id = scheduler.add_cron_job(sample_task, "0 2 * * *")
-        with pytest.raises(AttributeError):
-            scheduler.get_job_info(job_id)
+        info = scheduler.get_job_info(job_id)
+        assert info is not None
+        assert info["job_id"] == job_id
+        assert info["func_name"] == "sample_task"
+        assert info["next_run_time"] is None
+        assert info["type"] == "cron"
+
+    def test_list_all_jobs_on_pending_jobs(self, scheduler):
+        """list_all_jobs 同样不再因 pending 任务崩溃"""
+        scheduler.add_cron_job(sample_task, "0 2 * * *")
+        scheduler.add_interval_job(sample_task, 60)
+        infos = scheduler.list_all_jobs()
+        assert len(infos) == 2
+        assert all(i is not None for i in infos)
 
     def test_get_job_info_missing_job_returns_none(self, scheduler):
         assert scheduler.get_job_info("does_not_exist") is None

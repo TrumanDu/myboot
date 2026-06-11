@@ -7,6 +7,7 @@
 
 import logging
 import os
+import re
 import sys
 from typing import Optional, Union
 
@@ -301,44 +302,115 @@ def get_logger(name: str = "app"):
     return loguru_logger.bind(name=name)
 
 
+# issue #12: % 风格占位符检测（%s/%d/%r/%f/%x 等；%% 为转义，单独匹配以便排除）
+_PERCENT_PLACEHOLDER_PATTERN = re.compile(
+    r"%(?:%|[-+ #0]*(?:\d+|\*)?(?:\.(?:\d+|\*))?[hlL]?[diouxXeEfFgGcrsa])"
+)
+
+# issue #12: {} 风格占位符检测（完整的 {...} 对；{{ }} 转义在检测前剔除）
+_BRACE_PLACEHOLDER_PATTERN = re.compile(r"\{[^{}]*\}")
+
+
 # 为了向后兼容，提供 Logger 类
 class Logger:
     """
     日志器类（向后兼容）
-    
+
     注意：建议直接使用 `from loguru import logger`
+
+    issue #12: 同时支持 logging 风格的 % 占位符（"hello %s"）和
+    loguru 原生的 {} 占位符（"hello {}"）。日志调用绝不向业务代码
+    抛出格式化异常，格式化失败时降级输出消息本体。
     """
-    
+
     def __init__(self, name: str = "app"):
         """
         初始化日志器
-        
+
         Args:
             name: 日志器名称
         """
         self.name = name
         self._logger = loguru_logger.bind(name=name)
-    
+
+    @staticmethod
+    def _contains_percent_placeholder(message: str) -> bool:
+        """消息是否含真正的 % 占位符（%% 转义不算）"""
+        return any(
+            match.group() != "%%"
+            for match in _PERCENT_PLACEHOLDER_PATTERN.finditer(message)
+        )
+
+    @staticmethod
+    def _contains_brace_placeholder(message: str) -> bool:
+        """消息是否含 {} 风格占位符（{{ }} 转义不算）"""
+        unescaped = message.replace("{{", "").replace("}}", "")
+        return _BRACE_PLACEHOLDER_PATTERN.search(unescaped) is not None
+
+    def _format_message(self, message, args):
+        """
+        issue #12: 统一占位符预处理
+
+        规则：
+        1. 含 % 占位符且有位置参数且不含 {} 占位符 → 先做 % 预格式化，
+           args 置空后交给 loguru
+        2. 含 {} 占位符 → 原样交给 loguru（{} 优先于 %，保持 loguru 原生语义）
+        3. 预格式化异常（参数不匹配等）→ 回退为原样传递，不抛错
+
+        Returns:
+            (message, args) 元组，供 loguru 调用使用
+        """
+        if not args or not isinstance(message, str):
+            return message, args
+        if self._contains_brace_placeholder(message):
+            # {} 占位符优先，交给 loguru 内部的 str.format
+            return message, args
+        if self._contains_percent_placeholder(message):
+            try:
+                return message % args, ()
+            except Exception:
+                # 参数不匹配等预格式化失败：回退为原样传递
+                return message, args
+        return message, args
+
+    def _safe_log(self, log_method, message, args, kwargs) -> None:
+        """
+        issue #12: 安全调用 loguru 日志方法
+
+        loguru 内部的 str.format 路径若抛错（如消息含孤立 {），
+        捕获后降级为无参输出消息本体，绝不向业务代码抛格式化异常。
+        kwargs（命名 {name} 占位符 / extra）保持透传。
+        """
+        formatted, remaining_args = self._format_message(message, args)
+        try:
+            log_method(formatted, *remaining_args, **kwargs)
+        except Exception:
+            try:
+                log_method("{}", formatted)
+            except Exception:
+                # 日志降级输出也失败时静默放弃，保证业务调用不受影响
+                pass
+
     def debug(self, message: str, *args, **kwargs) -> None:
         """记录调试日志"""
-        self._logger.debug(message, *args, **kwargs)
-    
+        self._safe_log(self._logger.debug, message, args, kwargs)
+
     def info(self, message: str, *args, **kwargs) -> None:
         """记录信息日志"""
-        self._logger.info(message, *args, **kwargs)
-    
+        self._safe_log(self._logger.info, message, args, kwargs)
+
     def warning(self, message: str, *args, **kwargs) -> None:
         """记录警告日志"""
-        self._logger.warning(message, *args, **kwargs)
-    
+        self._safe_log(self._logger.warning, message, args, kwargs)
+
     def error(self, message: str, *args, **kwargs) -> None:
         """记录错误日志"""
-        self._logger.error(message, *args, **kwargs)
-    
+        self._safe_log(self._logger.error, message, args, kwargs)
+
     def critical(self, message: str, *args, **kwargs) -> None:
         """记录严重错误日志"""
-        self._logger.critical(message, *args, **kwargs)
-    
+        self._safe_log(self._logger.critical, message, args, kwargs)
+
     def exception(self, message: str, *args, **kwargs) -> None:
         """记录异常日志"""
-        self._logger.exception(message, *args, **kwargs)
+        self._safe_log(self._logger.exception, message, args, kwargs)

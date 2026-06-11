@@ -174,30 +174,36 @@ class TestConfigFilePriority:
 
 
 # ---------------------------------------------------------------------------
-# 2. default_settings 内置默认值（可疑现状 #1）
+# 2. 内置默认值（0.2.0 修复：默认值以大写 kwargs 传入 Dynaconf）
 # ---------------------------------------------------------------------------
 
 
-class TestDefaultSettingsQuirk:
-    def test_builtin_defaults_not_exposed_at_documented_paths(self):
-        """可疑现状 #1：default_settings 不是 Dynaconf 的有效选项。
+class TestDefaultSettings:
+    def test_builtin_defaults_exposed_at_documented_paths(self):
+        """0.2.0 修复：无任何 YAML 时内置默认值在文档路径上可取到。
 
-        没有任何 YAML 时，文档宣称的内置默认值（app.name="MyBoot App"、
-        server.port=8000 等）在对应路径上 **取不到**，全是 None。
+        旧版把 default_settings={...} 当 kwarg 传给 Dynaconf（无此参数），
+        默认值整体失效；现以大写 kwargs（APP=/SERVER=...）注册为默认配置项。
         """
         settings = create_settings()
-        assert settings.get("app.name") is None
-        assert settings.get("server.port") is None
-        assert settings.get("logging.level") is None
-        assert settings.get("scheduler.enabled") is None
+        assert settings.get("app.name") == "MyBoot App"
+        assert settings.get("server.port") == 8000
+        assert settings.get("logging.level") == "INFO"
+        assert settings.get("scheduler.enabled") is True
+        assert settings.get("scheduler.max_workers") == 10
 
-    def test_defaults_land_under_default_settings_key(self):
-        """default_settings dict 整体变成了名为 DEFAULT_SETTINGS 的配置项"""
+    def test_no_stray_default_settings_key(self):
+        """修复后不再产生名为 DEFAULT_SETTINGS 的杂散配置项"""
         settings = create_settings()
-        assert "DEFAULT_SETTINGS" in settings
-        assert settings.get("default_settings.app.name") == "MyBoot App"
-        assert settings.get("default_settings.server.port") == 8000
-        assert settings.get("default_settings.scheduler.max_workers") == 10
+        assert "DEFAULT_SETTINGS" not in settings
+
+    def test_yaml_partial_override_deep_merges_with_defaults(self, tmp_path):
+        """YAML 只覆盖 server.port 时，server 其余默认键保留（深合并）"""
+        write_yaml(tmp_path / "config.yaml", "server:\n  port: 9000\n")
+        settings = create_settings()
+        assert settings.get("server.port") == 9000
+        assert settings.get("server.host") == "0.0.0.0"
+        assert settings.get("server.workers") == 1
 
 
 # ---------------------------------------------------------------------------
@@ -242,27 +248,25 @@ class TestEnvVarOverride:
     def test_undeclared_leaf_under_declared_parent_also_ignored(
         self, tmp_path, monkeypatch
     ):
-        # server 段存在但 server.reload 未声明 → SERVER__RELOAD 同样被忽略
+        # server 段存在但 server.custom_flag 既未在 YAML 也未在内置默认值中
+        # 声明 → SERVER__CUSTOM_FLAG 被 ignore_unknown_envvars 忽略
+        # （注意 server.reload 已是内置默认键，不能再用作"未声明"示例）
         write_yaml(tmp_path / "config.yaml", """\
             server:
               port: 8000
             """)
-        monkeypatch.setenv("SERVER__RELOAD", "true")
+        monkeypatch.setenv("SERVER__CUSTOM_FLAG", "true")
         settings = create_settings()
-        assert settings.get("server.reload") is None
+        assert settings.get("server.custom_flag") is None
 
-    def test_env_var_ignored_when_no_yaml_at_all(self, monkeypatch):
-        """可疑现状 #2：内置默认值失效（见 #1）导致没有 YAML 时
-        SERVER__PORT / APP__NAME 等环境变量完全不生效。
-
-        docs/configuration.md 5.6 节宣称内置默认键可直接用 .env 覆盖，
-        实际行为与文档相悖。
-        """
+    def test_env_var_overrides_builtin_defaults_without_yaml(self, monkeypatch):
+        """0.2.0 修复：内置默认键生效后，无 YAML 时也可用环境变量覆盖
+        （与 docs/configuration.md 5.6 节一致）"""
         monkeypatch.setenv("SERVER__PORT", "7777")
         monkeypatch.setenv("APP__NAME", "env-only")
         settings = create_settings()
-        assert settings.get("server.port") is None
-        assert settings.get("app.name") is None
+        assert settings.get("server.port") == 7777
+        assert settings.get("app.name") == "env-only"
 
 
 # ---------------------------------------------------------------------------

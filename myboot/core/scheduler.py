@@ -4,6 +4,7 @@
 提供定时任务调度功能，基于 APScheduler 实现
 """
 
+import uuid
 from datetime import datetime
 from typing import Optional, Callable, Any, TYPE_CHECKING, Union
 
@@ -17,6 +18,7 @@ from apscheduler.executors.pool import ThreadPoolExecutor
 from apscheduler.jobstores.memory import MemoryJobStore
 
 from .config import get_config, get_settings
+from ..exceptions import SchedulerError
 
 if TYPE_CHECKING:
     from ..jobs.scheduled_job import ScheduledJob
@@ -91,6 +93,39 @@ class Scheduler:
             self._logger.warning(f"解析时区失败: {e}，使用系统时区")
             return None
     
+    def _resolve_job_id(self, job_id: Optional[str], prefix: str, func: Callable) -> str:
+        """解析并校验任务 ID
+
+        默认 ID 为 ``{prefix}_{模块名}.{限定名}``（限定名含类名），
+        不同类中的同名方法不会冲突（issue #14）。
+
+        注册前显式查重——APScheduler 未启动时不校验 pending 队列中的
+        ID 冲突，问题会延迟到 ``start()`` 落库时才爆发，这里提前拦截：
+        - 显式传入的 ID 已存在：抛 ``SchedulerError``
+        - 自动生成的 ID 已存在（同一函数注册多次）：追加短 uid 消歧并告警
+        """
+        existing_ids = set(self.list_jobs())
+
+        if job_id is not None:
+            if job_id in existing_ids:
+                raise SchedulerError(
+                    f"任务 ID 已存在: {job_id}，请使用唯一的 job_id",
+                    scheduler="scheduler",
+                )
+            return job_id
+
+        module = getattr(func, '__module__', 'unknown')
+        qualname = getattr(func, '__qualname__', getattr(func, '__name__', str(func)))
+        auto_id = f"{prefix}_{module}.{qualname}"
+        if auto_id in existing_ids:
+            suffix = uuid.uuid4().hex[:8]
+            self._logger.warning(
+                f"自动生成的任务 ID 冲突: {auto_id}（同一函数注册多次），"
+                f"追加后缀消歧: {auto_id}_{suffix}"
+            )
+            auto_id = f"{auto_id}_{suffix}"
+        return auto_id
+
     def add_cron_job(
         self,
         func: Callable,
@@ -110,7 +145,7 @@ class Scheduler:
         Returns:
             str: 任务ID
         """
-        job_id = job_id or f"cron_{func.__name__}"
+        job_id = self._resolve_job_id(job_id, "cron", func)
         
         try:
             # 解析 cron 表达式
@@ -192,7 +227,7 @@ class Scheduler:
         Returns:
             str: 任务ID
         """
-        job_id = job_id or f"interval_{func.__name__}"
+        job_id = self._resolve_job_id(job_id, "interval", func)
         
         try:
             # 创建间隔触发器（使用调度器配置的时区）
@@ -232,7 +267,7 @@ class Scheduler:
         Returns:
             str: 任务ID
         """
-        job_id = job_id or f"date_{func.__name__}"
+        job_id = self._resolve_job_id(job_id, "date", func)
         
         try:
             # 解析日期时间（返回 naive datetime）
@@ -369,10 +404,12 @@ class Scheduler:
         if not job:
             return None
         
+        # 未启动调度器时 pending Job 对象没有 next_run_time 属性，用 getattr 防御
+        next_run_time = getattr(job, 'next_run_time', None)
         info = {
             'job_id': job_id,
             'func_name': job.func.__name__ if hasattr(job.func, '__name__') else str(job.func),
-            'next_run_time': job.next_run_time.isoformat() if job.next_run_time else None,
+            'next_run_time': next_run_time.isoformat() if next_run_time else None,
         }
         
         # 根据触发器类型添加特定信息

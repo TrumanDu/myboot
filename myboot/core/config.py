@@ -130,33 +130,33 @@ def create_settings(config_file: Optional[str] = None) -> Dynaconf:
         
         # 是否合并环境变量
         merge_enabled=True,
-        
-        # 默认值
-        default_settings={
-            "app": {
-                "name": "MyBoot App",
-                "version": "0.1.0"
-            },
-            "server": {
-                "host": "0.0.0.0",
-                "port": 8000,
-                "reload": True,
-                "workers": 1,
-                "keep_alive_timeout": 5,
-                "graceful_timeout": 30,
-                "response_format": {
-                    "enabled": True,
-                    "exclude_paths": ["/docs"]
-                }
-            },
-            "logging": {
-                "level": "INFO"
-            },
-            "scheduler": {
+
+        # 默认值：以大写 kwargs 传入（Dynaconf 将任意大写 kwarg 注册为默认配置项）。
+        # 注意不能用 default_settings= —— Dynaconf 没有该参数，
+        # 它会被当成一个名为 DEFAULT_SETTINGS 的普通配置项，默认值整体失效
+        APP={
+            "name": "MyBoot App",
+            "version": "0.1.0"
+        },
+        SERVER={
+            "host": "0.0.0.0",
+            "port": 8000,
+            "reload": True,
+            "workers": 1,
+            "keep_alive_timeout": 5,
+            "graceful_timeout": 30,
+            "response_format": {
                 "enabled": True,
-                "timezone": "UTC",
-                "max_workers": 10
+                "exclude_paths": ["/docs"]
             }
+        },
+        LOGGING={
+            "level": "INFO"
+        },
+        SCHEDULER={
+            "enabled": True,
+            "timezone": "UTC",
+            "max_workers": 10
         }
     )
     

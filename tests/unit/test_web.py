@@ -306,12 +306,10 @@ class TestRouteTypeDiscovery:
         assert calls[0]["handler"] is fr
         assert calls[0]["methods"] == ["GET"]
 
-    def test_function_get_route_type_is_silently_skipped(self):
-        # 可疑现状：AST 扫描对 @get 模块级函数产生 type='function_get'，
-        # 但 _auto_register_routes 只对 type == 'function_route' /
-        # 'class_route' 做精确匹配（非前缀匹配），导致 'function_get'
-        # 类型的路由被静默跳过、不调用 app.add_route。
-        # 与 issue #8 修复点相关，重构时此行为预计会变。
+    def test_function_get_route_type_registers(self):
+        # 0.2.0 修复（issue #8 残留）：_auto_register_routes 现以前缀匹配
+        # route_type，AST 扫描产生的 'function_get'/'function_post' 等
+        # 模块级函数路由不再被静默跳过。
         @core_get("/fn")
         def fn():
             return "x"
@@ -328,14 +326,14 @@ class TestRouteTypeDiscovery:
         ]
         manager._auto_register_routes(FakeApp())
 
-        assert calls == []
+        assert len(calls) == 1
+        assert calls[0]["path"] == "/fn"
+        assert calls[0]["methods"] == ["GET"]
 
-    def test_class_route_type_registers_methods_then_raises(self):
-        # 可疑现状：type='class_route' 分支注册完类方法路由后，
-        # 收尾的 debug 日志访问 route_info['function']（class 条目没有
-        # 'function' 键）抛 KeyError，被 except 捕获后包装成
-        # AutoConfigurationError 重新抛出——即 class_route 注册必然失败，
-        # 但失败前 add_route 已被调用过。
+    def test_class_route_type_registers_methods_without_error(self):
+        # 0.2.0 修复：class 类型条目没有 'function' 键，旧版收尾 debug 日志
+        # 访问 route_info['function'] 抛 KeyError 导致注册必然失败；
+        # 现在方法路由注册成功且不再抛 AutoConfigurationError。
         @core_route("/cls")
         class ClassController:
             @core_get("/m")
@@ -352,10 +350,8 @@ class TestRouteTypeDiscovery:
         manager.discovered_components["routes"] = [
             {"type": "class_route", "class": ClassController, "module": "m"}
         ]
-        with pytest.raises(AutoConfigurationError):
-            manager._auto_register_routes(FakeApp())
+        manager._auto_register_routes(FakeApp())
 
-        # 方法路由在异常抛出前已注册
         assert len(calls) == 1
         assert calls[0]["path"] == "/m"
 
@@ -649,15 +645,16 @@ class TestHTTPExceptions:
         assert exc.message == "teapot"
         assert exc.details == {"hint": "rfc2324"}
 
-    def test_create_http_exception_known_status_raises_typeerror(self):
-        # 可疑现状（bug）：已知状态码时 create_http_exception 调用
-        # exception_class(status_code, message, details)，但映射中的子类
-        # __init__ 签名是 (message, details)，多出一个位置参数，
-        # 因此对全部 10 个已知状态码都会抛 TypeError——
-        # 该工厂函数当前只对未知状态码可用
-        for status_code in HTTP_STATUS_EXCEPTIONS:
-            with pytest.raises(TypeError):
-                create_http_exception(status_code, "msg")
+    def test_create_http_exception_known_status_returns_mapped_subclass(self):
+        # 0.2.0 修复：旧版对已知状态码用三个位置参数调用 (message, details)
+        # 签名的子类，对全部 10 个已知状态码都抛 TypeError；
+        # 现在已知状态码返回对应子类实例
+        for status_code, exc_class in HTTP_STATUS_EXCEPTIONS.items():
+            exc = create_http_exception(status_code, "msg", {"k": "v"})
+            assert isinstance(exc, exc_class)
+            assert exc.status_code == status_code
+            assert exc.message == "msg"
+            assert exc.details == {"k": "v"}
 
 
 # ---------------------------------------------------------------------------
@@ -665,53 +662,38 @@ class TestHTTPExceptions:
 # ---------------------------------------------------------------------------
 
 
-class TestExceptionClassDuality:
-    """下一批重构将收敛这两套同名异常类——届时本测试会被有意更新"""
+class TestExceptionClassUnification:
+    """0.2.0 起两套同名异常收敛为同一个类（以 myboot.exceptions 为准），
+    web 路径保留 re-export，import 兼容但身份唯一"""
 
-    def test_validation_error_classes_are_distinct(self):
+    def test_validation_error_is_same_class(self):
         from myboot.exceptions import MyBootException
         from myboot.exceptions import ValidationError as CoreValidationError
         from myboot.web.exceptions import ValidationError as WebValidationError
 
-        # 当前现状：两个 ValidationError 是互不相干的类
-        assert CoreValidationError is not WebValidationError
-        assert not issubclass(WebValidationError, CoreValidationError)
-        assert not issubclass(CoreValidationError, WebValidationError)
+        # 0.2.0：同一个类对象，except 任一路径都能捕获
+        assert CoreValidationError is WebValidationError
 
-        # core 版继承 MyBootException，带 code='VALIDATION_ERROR'
-        core_exc = CoreValidationError(field="name", value="x")
-        assert isinstance(core_exc, MyBootException)
-        assert core_exc.code == "VALIDATION_ERROR"
-        assert core_exc.message == "验证失败"
-        assert core_exc.field == "name"
-        assert core_exc.value == "x"
+        exc = WebValidationError(field="name", value="x")
+        assert isinstance(exc, MyBootException)
+        assert exc.code == "VALIDATION_ERROR"
+        assert exc.message == "验证失败"
+        assert exc.field == "name"
+        assert exc.value == "x"
+        # 旧 web 版独有的 error_type 参数已移除（以核心版签名为准）
+        assert not hasattr(exc, "error_type")
 
-        # web 版是裸 Exception 子类，无 code，带 error_type
-        web_exc = WebValidationError(field="name", value="x")
-        assert not isinstance(web_exc, MyBootException)
-        assert not hasattr(web_exc, "code")
-        assert web_exc.message == "验证失败"
-        assert web_exc.error_type == "validation_error"
-
-    def test_configuration_error_classes_are_distinct(self):
+    def test_configuration_error_is_same_class(self):
         from myboot.exceptions import ConfigurationError as CoreConfigurationError
         from myboot.exceptions import MyBootException
         from myboot.web.exceptions import (
             ConfigurationError as WebConfigurationError,
         )
 
-        # 当前现状：两个 ConfigurationError 是互不相干的类
-        assert CoreConfigurationError is not WebConfigurationError
-        assert not issubclass(WebConfigurationError, CoreConfigurationError)
-        assert not issubclass(CoreConfigurationError, WebConfigurationError)
+        assert CoreConfigurationError is WebConfigurationError
 
-        core_exc = CoreConfigurationError(config_key="app.name")
-        assert isinstance(core_exc, MyBootException)
-        assert core_exc.code == "CONFIGURATION_ERROR"
-        assert core_exc.config_key == "app.name"
-
-        web_exc = WebConfigurationError(config_key="app.name")
-        assert not isinstance(web_exc, MyBootException)
-        assert not hasattr(web_exc, "code")
-        assert web_exc.message == "配置错误"
-        assert web_exc.details == {}
+        exc = WebConfigurationError(config_key="app.name")
+        assert isinstance(exc, MyBootException)
+        assert exc.code == "CONFIGURATION_ERROR"
+        assert exc.config_key == "app.name"
+        assert exc.details == {}

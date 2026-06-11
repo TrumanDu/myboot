@@ -41,6 +41,36 @@ class ServiceRegistry:
 
         # 分析依赖关系
         self._analyze_dependencies(service_name, service_class)
+
+        # 注册时即检测循环依赖：只告警不报错（报错时机仍在容器构建时），
+        # 让问题在注册阶段就可见，便于定位
+        for cycle in self._find_cycles_involving(service_name):
+            logger.warning(
+                f"检测到循环依赖: {' -> '.join(cycle)}。"
+                f"容器构建时将会失败，请重构代码以消除循环依赖。"
+            )
+
+    def _find_cycles_involving(self, service_name: str) -> List[List[str]]:
+        """查找包含指定服务的循环依赖链（基于当前已注册的依赖关系，不使用缓存图）"""
+        cycles: List[List[str]] = []
+        path: List[str] = []
+        rec_stack: Set[str] = set()
+
+        def dfs(node: str) -> None:
+            if node in rec_stack:
+                cycle_start = path.index(node)
+                cycles.append(path[cycle_start:] + [node])
+                return
+            rec_stack.add(node)
+            path.append(node)
+            for neighbor in self.dependencies.get(node, set()):
+                if neighbor in self.services and not cycles:
+                    dfs(neighbor)
+            rec_stack.discard(node)
+            path.pop()
+
+        dfs(service_name)
+        return cycles
     
     def _analyze_dependencies(self, service_name: str, service_class: Type) -> None:
         """

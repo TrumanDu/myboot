@@ -55,22 +55,7 @@ _DECORATOR_MAPPING = {
 }
 
 
-def _camel_to_snake(name: str) -> str:
-    """
-    将驼峰命名转换为下划线分隔的小写形式
-    
-    Args:
-        name: 类名（驼峰命名）
-    
-    Returns:
-        下划线分隔的小写字符串
-    """
-    # 在大写字母前插入下划线（除了第一个字符）
-    s1 = re.sub('(.)([A-Z][a-z]+)', r'\1_\2', name)
-    # 处理连续大写字母的情况（如 HTTPClient）
-    s2 = re.sub('([a-z0-9])([A-Z])', r'\1_\2', s1)
-    # 转换为小写
-    return s2.lower()
+from ..utils.naming import camel_to_snake as _camel_to_snake
 
 
 def _find_project_root() -> str:
@@ -451,7 +436,10 @@ class AutoConfigurationManager:
         """自动注册路由"""
         for route_info in self.discovered_components['routes']:
             try:
-                if route_info['type'] == 'function_route':
+                # 前缀匹配：AST 扫描产生的类型为 function_get/function_post/
+                # function_route 等（issue #8 修复同款逻辑，精确匹配会漏掉
+                # 模块级 @get/@post 函数路由）
+                if route_info['type'].startswith('function_'):
                     # 函数路由
                     func = route_info['function']
                     route_config = getattr(func, '__myboot_route__')
@@ -461,8 +449,9 @@ class AutoConfigurationManager:
                         methods=route_config.get('methods', ['GET']),
                         **route_config.get('kwargs', {})
                     )
-                elif route_info['type'] == 'class_route':
-                    # 类路由
+                    logger.debug(f"自动注册路由: {route_info['module']}.{func.__name__}")
+                elif route_info['type'].startswith('class_'):
+                    # 类路由（class 条目没有 'function' 键，日志只在各方法处打印）
                     cls = route_info['class']
                     route_config = getattr(cls, '__myboot_route__')
                     instance = cls()
@@ -476,8 +465,6 @@ class AutoConfigurationManager:
                                 **method_config.get('kwargs', {})
                             )
                             logger.debug(f"自动注册路由: {route_info['module']}.{cls.__name__}.{method_name}")
-                
-                logger.debug(f"自动注册路由: {route_info['module']}.{route_info['function'].__name__}")
             except Exception as e:
                 logger.error(f"自动注册路由失败 {route_info['module']}: {e}", exc_info=True)
                 raise AutoConfigurationError(

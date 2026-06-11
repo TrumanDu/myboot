@@ -2,9 +2,15 @@
 Web 异常模块
 
 提供 Web 相关的异常类
+
+ValidationError / ConfigurationError 自 0.2.0 起与 myboot.exceptions
+中的定义收敛为同一个类（此前两处各自定义、互不兼容），从本模块 import
+仍然有效。
 """
 
 from typing import Any, Dict, Optional
+
+from ..exceptions import ConfigurationError, ValidationError  # noqa: F401
 
 
 class HTTPException(Exception):
@@ -90,23 +96,6 @@ class ServiceUnavailableError(HTTPException):
     
     def __init__(self, message: str = "服务不可用", details: Optional[Dict[str, Any]] = None):
         super().__init__(503, message, details)
-
-
-class ValidationError(Exception):
-    """验证错误异常"""
-    
-    def __init__(
-        self,
-        message: str = "验证失败",
-        field: Optional[str] = None,
-        value: Any = None,
-        error_type: str = "validation_error"
-    ):
-        self.message = message
-        self.field = field
-        self.value = value
-        self.error_type = error_type
-        super().__init__(self.message)
 
 
 class AuthenticationError(Exception):
@@ -200,21 +189,6 @@ class CacheError(Exception):
         super().__init__(self.message)
 
 
-class ConfigurationError(Exception):
-    """配置错误异常"""
-    
-    def __init__(
-        self,
-        message: str = "配置错误",
-        config_key: Optional[str] = None,
-        details: Optional[Dict[str, Any]] = None
-    ):
-        self.message = message
-        self.config_key = config_key
-        self.details = details or {}
-        super().__init__(self.message)
-
-
 class TimeoutError(Exception):
     """超时错误异常"""
     
@@ -246,6 +220,12 @@ HTTP_STATUS_EXCEPTIONS = {
 
 
 def create_http_exception(status_code: int, message: str, details: Optional[Dict[str, Any]] = None) -> HTTPException:
-    """根据状态码创建 HTTP 异常"""
-    exception_class = HTTP_STATUS_EXCEPTIONS.get(status_code, HTTPException)
-    return exception_class(status_code, message, details)
+    """根据状态码创建 HTTP 异常
+
+    已知状态码映射到对应子类（子类构造签名为 ``(message, details)``，
+    status_code 已内置）；未知状态码回退到基类 ``HTTPException``。
+    """
+    exception_class = HTTP_STATUS_EXCEPTIONS.get(status_code)
+    if exception_class is not None:
+        return exception_class(message, details)
+    return HTTPException(status_code, message, details)

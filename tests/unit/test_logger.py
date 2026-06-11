@@ -260,43 +260,145 @@ class TestBracePlaceholderFormatting:
 
 
 # ---------------------------------------------------------------------------
-# 5. %s 风格调用的当前行为（可疑现状，下一批有意更改）
+# 5. %s 风格调用（issue #12：Logger 兼容类同时支持 % 与 {} 占位符）
 # ---------------------------------------------------------------------------
 
 
-class TestPercentStyleCurrentBehavior:
-    def test_percent_s_left_literal_and_arg_silently_dropped(self, capture_records):
-        """可疑现状：loguru 用 str.format() 而非 % 格式化。
-        "hello %s" 中没有 {} 占位符，str.format("world") 原样返回，
-        位置参数 "world" 被静默丢弃，输出字面量 "hello %s"，不抛错。
-        （注意：下一批会改这里，届时本测试有意更新）
-        """
+class TestPercentStyleSupport:
+    def test_percent_s_is_formatted(self, capture_records):
+        """issue #12：原行为是 %s 字面量输出、参数静默丢弃；
+        修复后 Logger 兼容类对 % 占位符做预格式化"""
         records, add = capture_records
         add()
         Logger("x").info("hello %s", "world")
-        assert _messages(records) == ["hello %s"]
+        assert _messages(records) == ["hello world"]
 
-    def test_percent_s_on_raw_loguru_logger(self, capture_records):
-        """裸 loguru logger 同样原样输出 %s，不抛错"""
+    def test_percent_multiple_args_and_types(self, capture_records):
+        """issue #12：%s/%d 多参数预格式化"""
+        records, add = capture_records
+        add()
+        Logger("x").info("user=%s count=%d", "alice", 3)
+        assert _messages(records) == ["user=alice count=3"]
+
+    def test_percent_works_on_all_level_methods(self, capture_records):
+        """issue #12：六个级别方法统一支持 % 占位符"""
+        records, add = capture_records
+        add(level="DEBUG")
+        log = Logger("x")
+        log.debug("d=%s", 1)
+        log.info("i=%s", 2)
+        log.warning("w=%s", 3)
+        log.error("e=%s", 4)
+        log.critical("c=%s", 5)
+        log.exception("x=%s", 6)
+        msgs = _messages(records)
+        assert msgs[:5] == ["d=1", "i=2", "w=3", "e=4", "c=5"]
+        # exception() 无活动异常时附加 "NoneType: None"（既有 loguru 行为）
+        assert msgs[5] == "x=6\nNoneType: None"
+
+    def test_double_percent_escape(self, capture_records):
+        """issue #12：%% 是转义不是占位符，% 预格式化后输出单个 %"""
+        records, add = capture_records
+        add()
+        Logger("x").info("progress 100%% by %s", "worker")
+        assert _messages(records) == ["progress 100% by worker"]
+
+    def test_double_percent_only_without_real_placeholder(self, capture_records):
+        """issue #12：消息只含 %%（无真正 % 占位符）且带参数时，
+        不做 % 预格式化，参数交给 loguru（无 {} 则被忽略），%% 原样保留"""
+        records, add = capture_records
+        add()
+        Logger("x").info("progress 100%%", "ignored")
+        assert _messages(records) == ["progress 100%%"]
+
+    def test_mixed_percent_and_brace_prefers_brace(self, capture_records):
+        """issue #12 设计决策：消息同时含 % 和 {} 占位符时，{} 优先，
+        原样交给 loguru 的 str.format（保持 loguru 原生语义），% 保留字面量"""
+        records, add = capture_records
+        add()
+        Logger("x").info("pct=%s val={}", 42)
+        assert _messages(records) == ["pct=%s val=42"]
+
+    def test_percent_args_mismatch_falls_back_without_raising(self, capture_records):
+        """issue #12：% 预格式化参数不匹配时回退为原样输出，不向调用方抛错"""
+        records, add = capture_records
+        add()
+        Logger("x").info("a=%s b=%s", "only-one")
+        assert _messages(records) == ["a=%s b=%s"]
+
+    def test_lone_brace_with_args_does_not_raise(self, capture_records):
+        """issue #12：原行为是孤立 { 带参数时 loguru 的 str.format 异常
+        直接传播；修复后走 % 预格式化路径（无完整 {} 占位符），不抛错"""
+        records, add = capture_records
+        add()
+        Logger("x").info("ratio %s {bad", "x")
+        assert _messages(records) == ["ratio x {bad"]
+
+    def test_lone_brace_without_percent_degrades_safely(self, capture_records):
+        """issue #12：孤立 { 且无 % 占位符但带参数时，loguru 内部
+        str.format 抛错被捕获，降级为无参输出消息本体，不抛错"""
+        records, add = capture_records
+        add()
+        Logger("x").info("oops {bad", "x")
+        assert _messages(records) == ["oops {bad"]
+
+    def test_brace_format_failure_degrades_safely(self, capture_records):
+        """issue #12：{} 路径下 str.format 仍可能失败（如孤立 { 与 {} 共存），
+        捕获后降级输出消息本体，不抛错"""
+        records, add = capture_records
+        add()
+        Logger("x").info("{bad and {}", "x")
+        assert _messages(records) == ["{bad and {}"]
+
+    def test_percent_s_on_raw_loguru_logger_unchanged(self, capture_records):
+        """裸 loguru logger 不受 issue #12 影响：仍原样输出 %s，参数被丢弃"""
         records, add = capture_records
         add()
         loguru_logger.info("value=%s", 123)
         assert _messages(records) == ["value=%s"]
 
-    def test_percent_with_brace_chars_raises_when_args_given(self, capture_records):
-        """可疑现状：消息含未转义 { } 且带参数时，str.format() 抛 ValueError/KeyError，
-        loguru 不捕获该异常，直接传播给调用方"""
+    def test_raw_loguru_brace_chars_still_raise(self, capture_records):
+        """裸 loguru logger 不受 issue #12 影响：含未转义 { } 且带参数时
+        str.format() 异常仍直接传播"""
         records, add = capture_records
         add()
         with pytest.raises((ValueError, KeyError, IndexError)):
             loguru_logger.info("ratio %s {bad", "x")
 
     def test_message_without_args_not_formatted(self, capture_records):
-        """无参数时 loguru 不做任何格式化，含 % 或 {} 的消息原样输出"""
+        """无参数时不做任何格式化，含 % 或 {} 的消息原样输出（Logger 类与裸 loguru 一致）"""
         records, add = capture_records
         add()
         loguru_logger.info("progress 100% {not-a-placeholder}")
-        assert _messages(records) == ["progress 100% {not-a-placeholder}"]
+        Logger("x").info("progress 100% {not-a-placeholder}")
+        assert _messages(records) == [
+            "progress 100% {not-a-placeholder}",
+            "progress 100% {not-a-placeholder}",
+        ]
+
+
+class TestBracePathNoRegression:
+    """issue #12 回归保护：{} 路径与命名 kwargs 用法保持不变"""
+
+    def test_logger_brace_positional_not_regressed(self, capture_records):
+        records, add = capture_records
+        add()
+        Logger("x").info("count={} name={}", 42, "svc")
+        assert _messages(records) == ["count=42 name=svc"]
+
+    def test_logger_named_kwargs_not_regressed(self, capture_records):
+        """命名 {name} 占位符通过 kwargs 透传给 loguru"""
+        records, add = capture_records
+        add()
+        Logger("x").info("hello {who}", who="myboot")
+        assert _messages(records) == ["hello myboot"]
+
+    def test_logger_named_kwargs_with_positional_args(self, capture_records):
+        """位置 {} 与命名 {name} 混用时 args/kwargs 均透传"""
+        records, add = capture_records
+        add()
+        Logger("x").info("{} meets {who}", "alice", who="bob")
+        assert _messages(records) == ["alice meets bob"]
 
 
 # ---------------------------------------------------------------------------

@@ -10,32 +10,25 @@
 """
 
 import os
-import re
-import ast
-import json
 import time
-import importlib
 import inspect
 from pathlib import Path
-from typing import Dict, List, Type, Any, Optional, Callable, Set
-from functools import wraps
+from typing import Dict, List, Type, Any
 
 from loguru import logger as loguru_logger
+
+from ._internal import ast_analyzer, component_scanner, scan_cache
+from ._internal.scan_cache import _CACHE_VERSION
 
 logger = loguru_logger.bind(name=__name__)
 
 
 class AutoConfigurationError(Exception):
     """自动配置失败异常
-    
+
     当自动注册组件失败时抛出此异常，导致应用启动失败
     """
     pass
-
-
-# 缓存版本号，修改扫描逻辑时递增以使旧缓存失效
-# 3.1: 新增 worker_hooks 组件类型（@on_worker_start/@on_worker_stop）
-_CACHE_VERSION = "3.1"
 
 # MyBoot 装饰器到组件类型的映射
 # 注意：@cron/@interval/@once 装饰器只能在 @component 类中使用
@@ -117,205 +110,53 @@ class AutoConfigurationManager:
     
     def _get_cache_path(self, package_name: str) -> Path:
         """获取缓存文件路径"""
-        return Path(self.app_root) / f".myboot_cache_{package_name}.json"
-    
+        return scan_cache.get_cache_path(self.app_root, package_name)
+
     def _collect_source_files(self, package_path: Path) -> Dict[str, float]:
         """收集所有源文件及其修改时间"""
-        files = {}
-        for item in package_path.rglob("*.py"):
-            if not item.name.startswith("__"):
-                files[str(item)] = item.stat().st_mtime
-        return files
-    
+        return scan_cache.collect_source_files(package_path)
+
     def _is_cache_valid(self, cache_path: Path, package_path: Path) -> bool:
         """检查缓存是否有效"""
-        if not cache_path.exists():
-            return False
-        try:
-            with open(cache_path, 'r', encoding='utf-8') as f:
-                cache = json.load(f)
-            if cache.get('version') != _CACHE_VERSION:
-                return False
-            current_files = self._collect_source_files(package_path)
-            cached_files = cache.get('source_files', {})
-            return current_files == cached_files
-        except Exception:
-            return False
-    
+        return scan_cache.is_cache_valid(cache_path, package_path)
+
     def _save_cache(self, cache_path: Path, package_path: Path) -> None:
         """保存元数据缓存（不包含类对象）"""
-        try:
-            cache = {
-                'version': _CACHE_VERSION,
-                'source_files': self._collect_source_files(package_path),
-                'components': self._component_metadata
-            }
-            with open(cache_path, 'w', encoding='utf-8') as f:
-                json.dump(cache, f, indent=2)
-        except Exception as e:
-            logger.warning(f"保存缓存失败: {e}")
-    
+        scan_cache.save_cache(cache_path, package_path, self._component_metadata)
+
     def _load_cache(self, cache_path: Path) -> bool:
         """从缓存加载元数据（不导入模块）"""
-        try:
-            with open(cache_path, 'r', encoding='utf-8') as f:
-                cache = json.load(f)
-            loaded = cache.get('components', {})
-            # 规范化：补齐缺失的组件类型键，避免后续 KeyError
-            for key in self._component_metadata.keys():
-                loaded.setdefault(key, [])
-            self._component_metadata = loaded
-            return True
-        except Exception as e:
-            logger.warning(f"加载缓存失败: {e}")
+        loaded = scan_cache.load_cache(cache_path, self._component_metadata.keys())
+        if loaded is None:
             return False
-    
-    def _parse_decorators(self, node: ast.AST) -> List[str]:
+        self._component_metadata = loaded
+        return True
+
+    def _parse_decorators(self, node) -> List[str]:
         """解析装饰器名称"""
-        decorators = []
-        decorator_list = getattr(node, 'decorator_list', [])
-        for dec in decorator_list:
-            if isinstance(dec, ast.Name):
-                decorators.append(dec.id)
-            elif isinstance(dec, ast.Call):
-                if isinstance(dec.func, ast.Name):
-                    decorators.append(dec.func.id)
-                elif isinstance(dec.func, ast.Attribute):
-                    decorators.append(dec.func.attr)
-        return decorators
-    
+        return ast_analyzer.parse_decorators(node)
+
     def _scan_file_ast(self, file_path: Path, module_name: str) -> None:
         """使用 AST 静态分析扫描单个文件（不执行 import）"""
-        try:
-            with open(file_path, 'r', encoding='utf-8') as f:
-                source = f.read()
-            tree = ast.parse(source, filename=str(file_path))
-        except Exception as e:
-            logger.warning(f"AST 解析失败 {file_path}: {e}")
-            return
-        
-        # 只遍历模块顶层节点（避免 ast.walk 的问题）
-        # 注意：job 方法（@cron/@interval/@once）只能在 @component 类中定义
-        # job 方法的注册在 _auto_register_components 中动态进行，不在 AST 扫描阶段处理
-        for node in tree.body:
-            if isinstance(node, ast.ClassDef):
-                decorators = self._parse_decorators(node)
-                for dec_name in decorators:
-                    if dec_name in _DECORATOR_MAPPING:
-                        component_type = _DECORATOR_MAPPING[dec_name]
-                        self._component_metadata[component_type].append({
-                            'module': module_name,
-                            'class_name': node.name,
-                            'type': f'class_{dec_name}'
-                        })
-            
-            elif isinstance(node, ast.FunctionDef):
-                # 模块级函数
-                decorators = self._parse_decorators(node)
-                for dec_name in decorators:
-                    if dec_name in _DECORATOR_MAPPING:
-                        component_type = _DECORATOR_MAPPING[dec_name]
-                        self._component_metadata[component_type].append({
-                            'module': module_name,
-                            'func_name': node.name,
-                            'type': f'function_{dec_name}'
-                        })
-    
+        ast_analyzer.scan_file_ast(
+            file_path, module_name, self._component_metadata, _DECORATOR_MAPPING
+        )
+
     def _scan_package_ast(self, package_path: Path) -> None:
         """使用 AST 递归扫描包（不执行 import）"""
-        for item in package_path.rglob("*.py"):
-            if item.name.startswith("__"):
-                continue
-            # 计算模块名
-            rel_path = item.relative_to(package_path.parent)
-            module_name = str(rel_path.with_suffix('')).replace(os.sep, '.')
-            self._scan_file_ast(item, module_name)
-    
+        ast_analyzer.scan_package_ast(
+            package_path, self._component_metadata, _DECORATOR_MAPPING
+        )
+
     def _load_modules(self) -> None:
         """延迟加载模块，将元数据转换为实际的类对象"""
         if self._modules_loaded:
             return
-        
-        # 收集需要导入的模块（去重）
-        modules_to_import: Set[str] = set()
-        for items in self._component_metadata.values():
-            for item in items:
-                modules_to_import.add(item['module'])
-        
-        # 批量导入模块
-        imported_modules: Dict[str, Any] = {}
-        slow_modules = []  # 记录慢模块
-        
-        def import_single(module_name: str):
-            """导入单个模块并返回结果"""
-            try:
-                start = time.perf_counter()
-                module = importlib.import_module(module_name)
-                elapsed = (time.perf_counter() - start) * 1000
-                return module_name, module, elapsed, None
-            except Exception as e:
-                return module_name, None, 0, e
-        
-        if self.parallel_import and len(modules_to_import) > 1:
-            # 并行导入（对 I/O 密集的模块有帮助）
-            from concurrent.futures import ThreadPoolExecutor, as_completed
-            with ThreadPoolExecutor(max_workers=min(8, len(modules_to_import))) as executor:
-                futures = {executor.submit(import_single, m): m for m in modules_to_import}
-                for future in as_completed(futures):
-                    module_name, module, elapsed, error = future.result()
-                    if error:
-                        logger.error(f"导入模块失败 {module_name}: {error}")
-                    else:
-                        imported_modules[module_name] = module
-                        if elapsed > 100:
-                            slow_modules.append((module_name, elapsed))
-        else:
-            # 串行导入
-            for module_name in modules_to_import:
-                module_name, module, elapsed, error = import_single(module_name)
-                if error:
-                    logger.error(f"导入模块失败 {module_name}: {error}")
-                else:
-                    imported_modules[module_name] = module
-                    if elapsed > 100:
-                        slow_modules.append((module_name, elapsed))
-        
-        # 输出慢模块报告
-        if slow_modules:
-            slow_modules.sort(key=lambda x: x[1], reverse=True)
-            report = ", ".join([f"{name}({ms:.0f}ms)" for name, ms in slow_modules[:10]])
-            logger.warning(f"慢模块导入: {report}")
-        
-        # 将元数据转换为包含实际类对象的组件
-        for component_type, items in self._component_metadata.items():
-            for item in items:
-                module = imported_modules.get(item['module'])
-                if not module:
-                    continue
-                
-                entry = {'module': item['module'], 'type': item['type']}
-                
-                if 'class_name' in item:
-                    cls = getattr(module, item['class_name'], None)
-                    if cls:
-                        entry['class'] = cls
-                    else:
-                        continue
-                
-                if 'func_name' in item:
-                    func = getattr(module, item['func_name'], None)
-                    if func:
-                        entry['function'] = func
-                    else:
-                        continue
-                
-                if 'method_name' in item:
-                    entry['method_name'] = item['method_name']
-                    if 'class' in entry:
-                        entry['method'] = getattr(entry['class'], item['method_name'], None)
-                
-                self.discovered_components[component_type].append(entry)
-        
+
+        self.discovered_components = component_scanner.build_discovered_components(
+            self._component_metadata, self.parallel_import
+        )
+
         self._modules_loaded = True
     
     def auto_discover(self, package_name: str = "app") -> None:

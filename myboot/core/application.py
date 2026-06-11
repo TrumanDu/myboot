@@ -103,6 +103,11 @@ class Application:
         self.startup_hooks: List[Callable] = []
         self.shutdown_hooks: List[Callable] = []
 
+        # Worker 生命周期钩子（@on_worker_start / @on_worker_stop）
+        # 每个 worker 进程的 lifespan 中各触发一次；单 worker 模式下也触发一次
+        self.worker_start_hooks: List[Callable] = []
+        self.worker_stop_hooks: List[Callable] = []
+
         # FastAPI 应用实例
         self._fastapi_app: Optional[FastAPI] = None
 
@@ -156,14 +161,45 @@ class Application:
         self.shutdown_hooks.append(hook)
         self.logger.debug(f"已添加关闭钩子: {hook.__name__}")
 
+    def add_worker_start_hook(self, hook: Callable) -> None:
+        """添加 worker 启动钩子
+
+        在每个 worker 进程的 lifespan 启动阶段触发（startup_hooks 之后、
+        调度器启动之前），单 worker 模式下也触发一次。
+        """
+        self.worker_start_hooks.append(hook)
+        self.logger.debug(f"已添加 worker 启动钩子: {hook.__name__}")
+
+    def add_worker_stop_hook(self, hook: Callable) -> None:
+        """添加 worker 停止钩子
+
+        在每个 worker 进程的 lifespan 关闭阶段触发（调度器停止之后、
+        shutdown_hooks 之前）。
+
+        注意：Windows 多 worker 模式下父进程通过 terminate()（硬终止）
+        清理 worker 进程，lifespan 关闭阶段可能不会执行，
+        因此 worker 停止钩子在 Windows 上不保证触发。
+        """
+        self.worker_stop_hooks.append(hook)
+        self.logger.debug(f"已添加 worker 停止钩子: {hook.__name__}")
+
     def register_service(self, name: str, service: Any) -> None:
         """注册服务"""
         self.services[name] = service
         self.logger.debug(f"已注册服务: {name}")
 
     def get_service(self, name: str) -> Any:
-        """获取服务"""
-        return self.services.get(name)
+        """获取服务
+
+        优先返回 app.services 中的单例实例；非单例（request/factory）服务
+        不在 app.services 中预存，回退到 DI 容器按需解析。
+        """
+        if name in self.services:
+            return self.services[name]
+        di_container = getattr(self, 'di_container', None)
+        if di_container is not None and di_container.has_service(name):
+            return di_container.get_service(name)
+        return None
 
     def has_service(self, name: str) -> bool:
         """检查是否有服务"""
@@ -249,6 +285,17 @@ class Application:
                 except Exception as e:
                     self.logger.error(f"启动钩子执行失败: {e}", exc_info=True)
 
+            # 执行 worker 启动钩子（每个 worker 进程的 lifespan 各触发一次，
+            # 位于 startup_hooks 之后、调度器启动之前）
+            for hook in self.worker_start_hooks:
+                try:
+                    if asyncio.iscoroutinefunction(hook):
+                        await hook()
+                    else:
+                        hook()
+                except Exception as e:
+                    self.logger.error(f"Worker 启动钩子执行失败: {e}", exc_info=True)
+
             # 启动调度器
             if self.scheduler.has_jobs():
                 self.scheduler.start()
@@ -263,6 +310,18 @@ class Application:
             if self.scheduler.is_running():
                 self.scheduler.stop()
                 self.logger.info("✅ 任务调度器已停止")
+
+            # 执行 worker 停止钩子（调度器停止之后、shutdown_hooks 之前）
+            # 注意：Windows 多 worker 模式下父进程使用 terminate() 硬终止
+            # worker，lifespan 关闭阶段可能不执行，stop 钩子不保证触发
+            for hook in self.worker_stop_hooks:
+                try:
+                    if asyncio.iscoroutinefunction(hook):
+                        await hook()
+                    else:
+                        hook()
+                except Exception as e:
+                    self.logger.error(f"Worker 停止钩子执行失败: {e}", exc_info=True)
 
             # 执行关闭钩子
             for hook in self.shutdown_hooks:
@@ -503,10 +562,18 @@ class Application:
         run_kwargs = {**server_kwargs, **kwargs}
 
         # 自动发现和配置
+        # 多 worker 模式（workers > 1 且提供了 app_path）下，父进程只做 AST 自动发现
+        # （无副作用，预热 .myboot_cache_*.json 供子进程使用），实例化（apply_auto_configuration）
+        # 延迟到每个 worker 进程内的 bootstrap_worker() 执行，
+        # 避免 fork 模式下所有 worker 共享父进程预先创建的 client/service 实例（issue #11）。
+        # 单 worker 模式与缺少 app_path 的回退路径（父进程自己 serve）保持原有行为不变。
         if self.auto_configuration_enabled:
             self.logger.info("🔍 开始自动发现组件...")
             auto_discover(self.auto_discover_package)
-            apply_auto_configuration(self)
+            if workers > 1 and app_path:
+                self.logger.info("⏩ 多 worker 模式：自动配置延迟到各 worker 进程内执行")
+            else:
+                apply_auto_configuration(self)
 
         # 获取真实 IP 用于日志显示（服务器仍然使用配置的 host 绑定）
         display_host = get_local_ip() if host == "0.0.0.0" else host
@@ -568,6 +635,76 @@ class Application:
         if self._fastapi_app is None:
             self._fastapi_app = self._create_fastapi_app()
         return self._fastapi_app
+
+    def bootstrap_worker(self) -> FastAPI:
+        """Worker 进程内引导（多 worker 模式下由 server._worker_serve 调用）
+
+        spawn（Windows）与 fork（Linux/macOS）两种模式在此收敛：
+
+        1. 重读 MYBOOT_WORKER_ID 等环境变量——它们在 _worker_serve 中设置，
+           晚于 Application 构造（spawn 子进程在 multiprocessing 引导阶段
+           重新 import 用户主模块时即构造 Application），因此 __init__ 读到
+           的是默认值，必须在这里刷新。
+        2. 重算 scheduler 门控并重建 Scheduler——修复「每个 worker 都自认
+           primary、调度器多跑」的问题；同时丢弃 fork 继承的、绑定到
+           fork 前实例的任务注册。
+        3. 防御性重置——若检测到 fork 继承的预引导状态（父进程曾手动执行
+           apply_auto_configuration），清空 DI 容器与各注册表并重建
+           FastAPI 应用，丢弃绑定到 fork 前控制器实例的路由。
+        4. 在 worker 进程内执行自动配置——所有 client/service/component/
+           controller 在本 worker 内实例化（issue #11 核心修复），同时修复
+           Windows spawn 模式下 worker 无用户路由的问题。
+
+        Returns:
+            本 worker 进程内完成引导的 FastAPI 应用实例
+        """
+        # 1. 重读 worker 环境变量
+        self._worker_id = int(os.environ.get("MYBOOT_WORKER_ID", "1"))
+        self._worker_count = int(os.environ.get("MYBOOT_WORKER_COUNT", "1"))
+        self._is_primary_worker = os.environ.get("MYBOOT_IS_PRIMARY_WORKER", "1") == "1"
+
+        # 2. 重算调度器门控并重建调度器（默认仅 primary worker 启用，
+        #    可通过 scheduler.on_all_workers 配置覆盖）
+        scheduler_on_all_workers = self.config.get("scheduler.on_all_workers", False)
+        self._scheduler_enabled = self._is_primary_worker or scheduler_on_all_workers
+        self.scheduler = Scheduler(config=self.config, enabled=self._scheduler_enabled)
+
+        # 3. 防御性重置：fork 子进程若继承了父进程已引导的状态
+        #    （正常延迟引导路径下这些注册表都是空的，不会进入此分支）
+        di_container = getattr(self, 'di_container', None)
+        inherited = bool(
+            (di_container is not None and di_container.service_providers)
+            or self.services or self.clients or self.components
+        )
+        if inherited:
+            self.logger.warning(
+                "检测到 fork 继承的预引导状态，重置注册表后在 worker 内重建实例..."
+            )
+            if di_container is not None:
+                di_container.clear()
+            self.services.clear()
+            self.clients.clear()
+            self.components.clear()
+            if hasattr(self, '_client_type_map'):
+                self._client_type_map.clear()
+            if hasattr(self, '_component_type_map'):
+                self._component_type_map.clear()
+            # 注意：worker 钩子由 _auto_register_worker_hooks 重新注册，
+            # 先清空避免重复（此分支下父进程已经 apply 过一次）
+            self.worker_start_hooks.clear()
+            self.worker_stop_hooks.clear()
+            # 重建 FastAPI 应用，丢弃绑定到 fork 前控制器实例的路由
+            self._fastapi_app = self._create_fastapi_app()
+
+        # 4. 在 worker 进程内执行自动配置
+        #    - spawn 子进程：全局管理器是全新的，auto_discover 执行扫描（命中父进程缓存）
+        #    - fork 子进程：管理器已发现完成，auto_discover 幂等守卫直接返回
+        if self.auto_configuration_enabled:
+            self.logger.info(f"🔍 Worker-{self._worker_id} 开始进程内引导...")
+            auto_discover(self.auto_discover_package)
+            apply_auto_configuration(self)
+
+        return self.get_fastapi_app()
 
     # ==================== Worker 信息 ====================
     

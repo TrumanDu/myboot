@@ -34,7 +34,8 @@ class AutoConfigurationError(Exception):
 
 
 # 缓存版本号，修改扫描逻辑时递增以使旧缓存失效
-_CACHE_VERSION = "3.0"
+# 3.1: 新增 worker_hooks 组件类型（@on_worker_start/@on_worker_stop）
+_CACHE_VERSION = "3.1"
 
 # MyBoot 装饰器到组件类型的映射
 # 注意：@cron/@interval/@once 装饰器只能在 @component 类中使用
@@ -52,6 +53,8 @@ _DECORATOR_MAPPING = {
     'delete': 'routes',
     'patch': 'routes',
     'middleware': 'middleware',
+    'on_worker_start': 'worker_hooks',
+    'on_worker_stop': 'worker_hooks',
 }
 
 
@@ -95,7 +98,8 @@ class AutoConfigurationManager:
             'models': [],
             'clients': [],
             'components': [],
-            'rest_controllers': []
+            'rest_controllers': [],
+            'worker_hooks': []
         }
         # 已加载的组件（包含实际类对象，延迟填充）
         self.discovered_components: Dict[str, List[dict]] = {
@@ -105,7 +109,8 @@ class AutoConfigurationManager:
             'models': [],
             'clients': [],
             'components': [],
-            'rest_controllers': []
+            'rest_controllers': [],
+            'worker_hooks': []
         }
         self.auto_configured = False
         self._modules_loaded = False
@@ -155,7 +160,11 @@ class AutoConfigurationManager:
         try:
             with open(cache_path, 'r', encoding='utf-8') as f:
                 cache = json.load(f)
-            self._component_metadata = cache.get('components', {})
+            loaded = cache.get('components', {})
+            # 规范化：补齐缺失的组件类型键，避免后续 KeyError
+            for key in self._component_metadata.keys():
+                loaded.setdefault(key, [])
+            self._component_metadata = loaded
             return True
         except Exception as e:
             logger.warning(f"加载缓存失败: {e}")
@@ -315,6 +324,12 @@ class AutoConfigurationManager:
         
         模块的实际导入延迟到 apply_auto_configuration 时进行
         """
+        # 幂等守卫：fork 子进程（bootstrap_worker）重复调用时直接返回，
+        # 避免向 _component_metadata 追加重复条目
+        if self.auto_configured:
+            logger.debug("自动发现已完成，跳过重复扫描")
+            return
+
         start_time = time.perf_counter()
         logger.info(f"开始自动发现 {package_name} 包中的组件...")
         
@@ -369,7 +384,9 @@ class AutoConfigurationManager:
         self._auto_register_components(app)  # 注册组件并注册其中的 job 方法
         self._auto_register_middleware(app)
         self._auto_register_rest_controllers(app)
-        
+        # 最后注册 worker 钩子（此时容器/服务已就绪，钩子内可解析依赖）
+        self._auto_register_worker_hooks(app)
+
         elapsed = (time.perf_counter() - start_time) * 1000
         logger.info(f"自动配置应用完成，耗时: {elapsed:.2f}ms")
     
@@ -744,7 +761,18 @@ class AutoConfigurationManager:
                     cls = service_info['class']
                     service_config = getattr(cls, '__myboot_service__')
                     service_name = service_config.get('name', cls.__name__.lower())
-                    
+
+                    # 非单例（request/factory）服务跳过预实例化：
+                    # 按需通过 app.di_container / Container.get 解析，
+                    # 不会出现在 app.services 字典中
+                    scope = service_config.get('scope', 'singleton')
+                    if scope != 'singleton':
+                        logger.info(
+                            f"自动注册服务（{scope} 作用域，按需解析）: '{service_name}' "
+                            f"({service_info['module']}.{cls.__name__})"
+                        )
+                        continue
+
                     # 从容器获取服务实例（自动注入依赖）
                     instance = di_container.get_service(service_name)
                     app.services[service_name] = instance
@@ -808,17 +836,40 @@ class AutoConfigurationManager:
             try:
                 cls = client_info['class']
                 client_config = getattr(cls, '__myboot_client__')
-                
-                # 创建客户端实例并注册到应用上下文
-                instance = cls()
                 # 优先使用用户自定义名称，否则使用 _camel_to_snake 自动生成
                 client_name = client_config.get('name', _camel_to_snake(cls.__name__))
+                auto_name = _camel_to_snake(cls.__name__)
+
+                # 非单例（request/factory）客户端：注册类到 DI 容器按需解析，
+                # 不在此处创建实例，也不出现在 app.clients 字典中
+                scope = client_config.get('scope', 'singleton')
+                if scope != 'singleton':
+                    app.di_container.register_service(
+                        service_class=cls,
+                        service_name=client_name,
+                        scope=scope,
+                        config=client_config
+                    )
+                    if auto_name != client_name and not app.di_container.has_service(auto_name):
+                        app.di_container.register_service(
+                            service_class=cls,
+                            service_name=auto_name,
+                            scope=scope,
+                            config=client_config
+                        )
+                    logger.info(
+                        f"自动注册客户端（{scope} 作用域，按需解析）: '{client_name}' "
+                        f"({client_info['module']}.{cls.__name__})"
+                    )
+                    continue
+
+                # 创建客户端实例并注册到应用上下文
+                instance = cls()
                 app.clients[client_name] = instance
                 
                 # 同时记录类型映射，用于按类型查找
                 app._client_type_map[cls] = client_name
                 # 也用自动转换的名称注册（如果不同），方便按类型名查找
-                auto_name = _camel_to_snake(cls.__name__)
                 if auto_name != client_name and auto_name not in app.clients:
                     app.clients[auto_name] = instance
                 
@@ -948,6 +999,38 @@ class AutoConfigurationManager:
                 logger.info(f"自动注册任务（组件方法）: {cls.__name__}.{method_name} ({module_name})")
             except Exception as e:
                 logger.error(f"注册任务失败 {cls.__name__}.{method_name}: {e}", exc_info=True)
+
+    def _auto_register_worker_hooks(self, app) -> None:
+        """自动注册 worker 生命周期钩子（@on_worker_start / @on_worker_stop）
+
+        模块级函数钩子按 order 排序后追加到 app.worker_start_hooks /
+        app.worker_stop_hooks，由每个 worker 进程的 lifespan 触发。
+        """
+        hook_infos = self.discovered_components.get('worker_hooks', [])
+        if not hook_infos:
+            return
+
+        start_hooks = []
+        stop_hooks = []
+        for hook_info in hook_infos:
+            func = hook_info.get('function')
+            if func is None:
+                continue
+            hook_config = getattr(func, '__myboot_worker_hook__', None)
+            if not hook_config:
+                continue
+            order = hook_config.get('order', 0)
+            if hook_config.get('event') == 'start':
+                start_hooks.append((order, func, hook_info['module']))
+            else:
+                stop_hooks.append((order, func, hook_info['module']))
+
+        for order, func, module in sorted(start_hooks, key=lambda x: x[0]):
+            app.add_worker_start_hook(func)
+            logger.info(f"自动注册 worker 启动钩子: {module}.{func.__name__} (order={order})")
+        for order, func, module in sorted(stop_hooks, key=lambda x: x[0]):
+            app.add_worker_stop_hook(func)
+            logger.info(f"自动注册 worker 停止钩子: {module}.{func.__name__} (order={order})")
 
 
 # 全局自动配置管理器实例

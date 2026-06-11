@@ -61,7 +61,13 @@ class Container:
         # 最后从 clients 中获取
         if name in self._app.clients:
             return self._app.clients[name]
-        
+
+        # 非单例（request/factory）的 service/client 不在上述字典中预存，
+        # 回退到 DI 容器按需解析
+        di_container = getattr(self._app, 'di_container', None)
+        if di_container is not None and di_container.has_service(name):
+            return di_container.get_service(name)
+
         return default
     
     def get_or_raise(self, name: str) -> Any:

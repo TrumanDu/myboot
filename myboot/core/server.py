@@ -142,8 +142,20 @@ def _worker_serve(
         raise ImportError("Hypercorn 未安装，请运行: pip install hypercorn")
     
     # 从模块路径加载 app
+    # 注意：必须先解析——导入用户模块才会构造 Application 并设置 _current_app
     app = _resolve_app_from_path(app_path)
-    
+
+    # myboot 应用检测：若用户模块构造了 Application，则在 worker 进程内完成引导
+    # （重读 worker 环境变量、重建调度器、实例化 client/service/controller）。
+    # spawn 与 fork 两种模式在 bootstrap_worker 中收敛，修复：
+    # - fork 模式所有 worker 共享父进程预创建实例（issue #11）
+    # - spawn 模式（Windows）worker 无用户路由
+    # - 所有 worker 都自认 primary 导致调度器多跑
+    # 普通 ASGI 应用（非 myboot）路径不受影响。
+    import myboot.core.application as _myboot_application
+    if _myboot_application._current_app is not None:
+        app = _myboot_application._current_app.bootstrap_worker()
+
     # 重建配置
     config = Config()
     for key, value in config_dict.items():

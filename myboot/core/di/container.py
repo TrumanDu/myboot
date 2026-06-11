@@ -41,9 +41,12 @@ class DependencyContainer:
         """
         # 注册到注册表
         self.registry.register_service(service_class, service_name, config)
-        
+
         # 创建服务提供者
-        provider = ServiceProvider(service_class, service_name, scope, **(config or {}))
+        # 注意：装饰器元数据（config）中可能含顶层 'scope' 键，
+        # 与显式 scope 参数冲突，这里剔除（以显式参数为准）
+        config_kwargs = {k: v for k, v in (config or {}).items() if k != 'scope'}
+        provider = ServiceProvider(service_class, service_name, scope, **config_kwargs)
         self.service_providers[service_name] = provider
     
     def register_instance(self, name: str, instance: Any) -> None:

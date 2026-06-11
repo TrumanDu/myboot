@@ -145,17 +145,41 @@ def once(run_date: str = None, enabled: Optional[bool] = None, **kwargs):
     return decorator
 
 
-def service(name: str = None, **kwargs):
+# @service/@client 支持的生命周期范围
+# - singleton: 单例（默认），每个 worker 进程内一个实例
+# - request:   请求级，基于 contextvars（ContextLocalSingleton），
+#              同一 HTTP 请求（asyncio 任务）内同一实例，跨请求不同实例
+# - factory:   每次解析都创建新实例
+_VALID_SCOPES = {'singleton', 'request', 'factory'}
+
+
+def _validate_scope(scope: str, decorator_name: str) -> None:
+    """校验 scope 参数，装饰期即报错，避免拼写错误静默回退为单例"""
+    if scope not in _VALID_SCOPES:
+        raise ValueError(
+            f"@{decorator_name} 不支持的 scope: {scope!r}，"
+            f"可选值: {sorted(_VALID_SCOPES)}"
+        )
+
+
+def service(name: str = None, scope: str = 'singleton', **kwargs):
     """
     服务装饰器
-    
+
     Args:
         name: 服务名称
+        scope: 生命周期范围（singleton/request/factory，默认 singleton）
+            - 'singleton': 每个 worker 进程内单例
+            - 'request': 每个请求（asyncio 任务上下文）内单例
+            - 'factory': 每次解析创建新实例
         **kwargs: 其他服务参数
     """
+    _validate_scope(scope, 'service')
+
     def decorator(cls):
         cls.__myboot_service__ = {
             'name': name or _camel_to_snake(cls.__name__),
+            'scope': scope,
             'kwargs': kwargs
         }
         return cls
@@ -179,17 +203,25 @@ def model(name: str = None, **kwargs):
     return decorator
 
 
-def client(name: str = None, **kwargs):
+def client(name: str = None, scope: str = 'singleton', **kwargs):
     """
     客户端装饰器
-    
+
     Args:
         name: 客户端名称
+        scope: 生命周期范围（singleton/request/factory，默认 singleton）
+            - 'singleton': 每个 worker 进程内单例，注册到 app.clients
+            - 'request': 每个请求（asyncio 任务上下文）内单例，
+              通过 DI 容器按需解析，不出现在 app.clients
+            - 'factory': 每次解析创建新实例，不出现在 app.clients
         **kwargs: 其他客户端参数
     """
+    _validate_scope(scope, 'client')
+
     def decorator(cls):
         cls.__myboot_client__ = {
             'name': name or _camel_to_snake(cls.__name__),
+            'scope': scope,
             'kwargs': kwargs
         }
         return cls
@@ -293,6 +325,70 @@ def middleware(
         }
         return func
     return decorator
+
+
+def _worker_hook(event: str, order_or_func):
+    """on_worker_start/on_worker_stop 的公共实现
+
+    同时支持两种用法：
+        @on_worker_start            （裸装饰器）
+        @on_worker_start(order=1)   （带参数）
+    """
+    if callable(order_or_func):
+        # 裸装饰器用法：@on_worker_start
+        func = order_or_func
+        func.__myboot_worker_hook__ = {'event': event, 'order': 0}
+        return func
+
+    order = order_or_func
+
+    def decorator(func):
+        func.__myboot_worker_hook__ = {'event': event, 'order': order}
+        return func
+    return decorator
+
+
+def on_worker_start(order: Union[int, Callable] = 0):
+    """
+    Worker 启动钩子装饰器
+
+    被装饰的模块级函数在每个 worker 进程的 lifespan 启动阶段触发一次
+    （startup_hooks 之后、调度器启动之前）。单 worker 模式下也触发一次，
+    语义一致。支持同步和异步函数。
+
+    钩子函数不接收参数，可通过 myboot.core.application.app() 读取
+    worker_id / is_primary_worker 等信息。
+
+    Args:
+        order: 执行顺序，数字越小越先执行（默认 0）
+
+    Examples:
+        @on_worker_start
+        def init_pool():
+            ...
+
+        @on_worker_start(order=1)
+        async def warm_cache():
+            ...
+    """
+    return _worker_hook('start', order)
+
+
+def on_worker_stop(order: Union[int, Callable] = 0):
+    """
+    Worker 停止钩子装饰器
+
+    被装饰的模块级函数在每个 worker 进程的 lifespan 关闭阶段触发一次
+    （调度器停止之后、shutdown_hooks 之前）。支持同步和异步函数。
+
+    注意：Windows 多 worker 模式下父进程通过 terminate()（硬终止）清理
+    worker 进程，lifespan 关闭阶段可能不会执行，因此 stop 钩子在
+    Windows 上不保证触发。
+
+    Args:
+        order: 执行顺序，数字越小越先执行（默认 0）
+    """
+    return _worker_hook('stop', order)
 
 
 def rest_controller(base_path: str, **kwargs):

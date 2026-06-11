@@ -318,6 +318,8 @@ class TestSingletonSemantics:
 # ---------------------------------------------------------------------------
 
 class TestServiceClientDecorators:
+    # 注意：issue #11 多 worker 改造为 @service/@client 新增了顶层 scope 键
+    # （默认 'singleton'），以下精确断言随之更新
     def test_service_decorator_sets_metadata_with_snake_case_name(self):
         @service()
         class OrderService:
@@ -325,6 +327,7 @@ class TestServiceClientDecorators:
 
         assert OrderService.__myboot_service__ == {
             "name": "order_service",
+            "scope": "singleton",
             "kwargs": {},
         }
 
@@ -335,6 +338,7 @@ class TestServiceClientDecorators:
 
         assert OrderService.__myboot_service__ == {
             "name": "custom_name",
+            "scope": "singleton",
             "kwargs": {"lazy": True},
         }
 
@@ -352,6 +356,7 @@ class TestServiceClientDecorators:
 
         assert RedisClient.__myboot_client__ == {
             "name": "redis_client",
+            "scope": "singleton",
             "kwargs": {},
         }
 
@@ -362,6 +367,7 @@ class TestServiceClientDecorators:
 
         assert DatabaseClient.__myboot_client__ == {
             "name": "db",
+            "scope": "singleton",
             "kwargs": {"pool_size": 10},
         }
 

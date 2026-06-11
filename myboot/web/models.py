@@ -17,12 +17,6 @@ class BaseResponse(BaseModel):
     message: str = Field(default="操作成功", description="响应消息")
     data: Optional[Any] = Field(default=None, description="响应数据")
     timestamp: datetime = Field(default_factory=datetime.now, description="时间戳")
-    
-    class Config:
-        json_encoders = {
-            datetime: lambda v: v.isoformat()
-        }
-
 
 class ErrorResponse(BaseResponse):
     """错误响应模型"""
@@ -97,12 +91,6 @@ class HealthCheckResponse(BaseModel):
     version: str = Field(description="应用版本")
     uptime: str = Field(description="运行时间")
     timestamp: datetime = Field(default_factory=datetime.now, description="检查时间")
-    
-    class Config:
-        json_encoders = {
-            datetime: lambda v: v.isoformat()
-        }
-
 
 class RequestInfo(BaseModel):
     """请求信息模型"""
@@ -116,12 +104,6 @@ class RequestInfo(BaseModel):
     client_ip: Optional[str] = Field(default=None, description="客户端 IP")
     user_agent: Optional[str] = Field(default=None, description="用户代理")
     timestamp: datetime = Field(default_factory=datetime.now, description="请求时间")
-    
-    class Config:
-        json_encoders = {
-            datetime: lambda v: v.isoformat()
-        }
-
 
 class ResponseInfo(BaseModel):
     """响应信息模型"""
@@ -131,12 +113,6 @@ class ResponseInfo(BaseModel):
     body: Optional[Any] = Field(default=None, description="响应体")
     process_time: float = Field(description="处理时间（秒）")
     timestamp: datetime = Field(default_factory=datetime.now, description="响应时间")
-    
-    class Config:
-        json_encoders = {
-            datetime: lambda v: v.isoformat()
-        }
-
 
 class ValidationErrorDetail(BaseModel):
     """验证错误详情模型"""
@@ -162,12 +138,6 @@ class APIError(BaseModel):
     message: str = Field(description="错误消息")
     details: Optional[Dict[str, Any]] = Field(default=None, description="错误详情")
     timestamp: datetime = Field(default_factory=datetime.now, description="错误时间")
-    
-    class Config:
-        json_encoders = {
-            datetime: lambda v: v.isoformat()
-        }
-
 
 class SuccessResponse(BaseResponse):
     """成功响应模型"""

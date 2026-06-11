@@ -575,9 +575,8 @@ class TestResponseWrapper:
         assert ResponseWrapper.wrap(fake) is fake
 
     def test_api_response_model_dump_includes_none(self):
-        # 可疑现状：ApiResponse.Config 写了 exclude_none = True，
-        # 但这不是 pydantic v2 生效的配置项，model_dump() 默认仍包含
-        # None 字段；需显式 model_dump(exclude_none=True) 才会排除
+        # ConfigDict(exclude_none=True) 在 FastAPI JSON 响应中生效；
+        # model_dump() 默认仍包含 None 字段，需显式 exclude_none=True 才会排除
         r = ApiResponse(success=True, code=200)
         assert r.model_dump() == {
             "success": True,

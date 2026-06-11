@@ -11,23 +11,18 @@ REST API 响应格式封装
 """
 
 from typing import Any, Dict, Optional, Union
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class ApiResponse(BaseModel):
     """统一的 REST API 响应格式"""
     
+    model_config = ConfigDict(exclude_none=True)
+    
     success: bool = Field(description="是否成功")
     code: int = Field(description="HTTP 状态码")
     message: Optional[str] = Field(default=None, description="响应消息")
     data: Optional[Any] = Field(default=None, description="响应数据")
-    
-    class Config:
-        # 序列化时排除值为 None 的字段
-        exclude_none = True
-        json_encoders = {
-            # 可以在这里添加自定义编码器
-        }
 
 
 class ResponseWrapper:

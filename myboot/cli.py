@@ -155,24 +155,25 @@ class UserService:
             
             # 创建示例模型
             model_content = '''"""数据模型示例"""
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, ConfigDict, EmailStr
 from typing import Optional
 
 
 class User(BaseModel):
     """用户模型"""
-    id: Optional[int] = None
-    name: str
-    email: EmailStr
-    status: str = "active"
-    
-    class Config:
-        json_schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "name": "张三",
                 "email": "zhangsan@example.com"
             }
         }
+    )
+
+    id: Optional[int] = None
+    name: str
+    email: EmailStr
+    status: str = "active"
 '''
             model_file = project_dir / 'app' / 'model' / 'user.py'
             model_file.write_text(model_content, encoding='utf-8')

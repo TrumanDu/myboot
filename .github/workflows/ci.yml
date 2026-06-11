@@ -1,0 +1,44 @@
+name: CI
+
+on:
+  push:
+    branches: [main, "optimize/**"]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    name: pytest (py${{ matrix.python-version }} / ${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python-version: ["3.9", "3.10", "3.11", "3.12", "3.13"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install dependencies
+        run: uv sync --extra dev --extra test
+
+      - name: Run unit tests
+        run: uv run pytest tests/unit -q --cov=myboot --cov-report=term-missing
+
+      - name: Run integration tests
+        shell: bash
+        # 退出码 5 = 未收集到用例（集成测试目录暂为空时不视为失败）
+        run: uv run pytest tests/integration -q -m integration || [ $? -eq 5 ]
+
+      - name: Upload coverage report
+        if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.12'
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: .coverage
+          include-hidden-files: true

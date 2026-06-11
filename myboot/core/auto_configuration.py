@@ -158,12 +158,42 @@ class AutoConfigurationManager:
         )
 
         self._modules_loaded = True
+
+    def _resolve_scan_target(self, package_name: str):
+        """解析扫描目标：单模块文件或包目录
+
+        Returns:
+            (scan_path, scan_type, module_name)
+            scan_type 为 'file' 或 'package'；目录扫描时 module_name 为 None
+        """
+        app_root = Path(self.app_root)
+
+        if package_name.endswith('.py'):
+            file_path = app_root / package_name.replace('/', os.sep)
+            if file_path.is_file():
+                module_name = str(
+                    file_path.relative_to(app_root).with_suffix('')
+                ).replace(os.sep, '.')
+                return file_path, 'file', module_name
+
+        dotted_path = app_root / package_name.replace('.', os.sep)
+        py_file = dotted_path.with_suffix('.py')
+        if py_file.is_file():
+            return py_file, 'file', package_name
+
+        dir_path = dotted_path if dotted_path.is_dir() else app_root / package_name
+        if dir_path.is_dir():
+            return dir_path, 'package', None
+
+        return None, None, None
     
     def auto_discover(self, package_name: str = "app") -> None:
         """
         自动发现应用组件（AST 静态分析，不执行 import）
         
-        模块的实际导入延迟到 apply_auto_configuration 时进行
+        模块的实际导入延迟到 apply_auto_configuration 时进行。
+        package_name 支持目录包（如 app、examples/convention）或单模块
+        （如 examples.convention_app、examples/convention_app.py）。
         """
         # 幂等守卫：fork 子进程（bootstrap_worker）重复调用时直接返回，
         # 避免向 _component_metadata 追加重复条目
@@ -175,15 +205,15 @@ class AutoConfigurationManager:
         logger.info(f"开始自动发现 {package_name} 包中的组件...")
         
         try:
-            package_path = Path(self.app_root) / package_name
-            if not package_path.exists():
-                logger.warning(f"包路径不存在: {package_path}")
+            scan_path, scan_type, module_name = self._resolve_scan_target(package_name)
+            if scan_path is None:
+                logger.warning(f"扫描目标不存在: {package_name}")
                 return
             
             cache_path = self._get_cache_path(package_name)
             
             # 尝试使用缓存（只读取元数据，不导入模块）
-            if self.use_cache and self._is_cache_valid(cache_path, package_path):
+            if self.use_cache and self._is_cache_valid(cache_path, scan_path):
                 if self._load_cache(cache_path):
                     self.auto_configured = True
                     elapsed = (time.perf_counter() - start_time) * 1000
@@ -191,11 +221,14 @@ class AutoConfigurationManager:
                     return
             
             # AST 静态分析扫描（不执行 import）
-            self._scan_package_ast(package_path)
+            if scan_type == 'file':
+                self._scan_file_ast(scan_path, module_name)
+            else:
+                self._scan_package_ast(scan_path)
             
             # 保存缓存
             if self.use_cache:
-                self._save_cache(cache_path, package_path)
+                self._save_cache(cache_path, scan_path)
             
             self.auto_configured = True
             elapsed = (time.perf_counter() - start_time) * 1000
@@ -259,6 +292,11 @@ class AutoConfigurationManager:
                         method_path = route_config['path']
                         methods = route_config.get('methods', ['GET'])
                         route_kwargs = {**base_kwargs, **route_config.get('kwargs', {})}
+                        route_kwargs.setdefault(
+                            'operation_id',
+                            f"{controller_info['module'].replace('.', '_')}_"
+                            f"{cls.__name__}_{method_name}"
+                        )
                         
                         # 合并基础路径和方法路径
                         # 如果方法路径是绝对路径（以 // 开头），则直接使用（去掉一个 /）

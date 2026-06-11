@@ -32,7 +32,10 @@ def get_cache_path(app_root: str, package_name: str) -> Path:
 
 
 def collect_source_files(package_path: Path) -> Dict[str, float]:
-    """收集所有源文件及其修改时间"""
+    """收集扫描范围内的源文件及其修改时间（支持单文件或目录）"""
+    if package_path.is_file():
+        return {str(package_path): package_path.stat().st_mtime}
+
     files = {}
     for item in package_path.rglob("*.py"):
         if not item.name.startswith("__"):

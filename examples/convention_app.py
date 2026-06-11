@@ -29,7 +29,7 @@ sys.path.insert(0, str(project_root))
 app = Application(
     name="约定优于配置示例",
     auto_configuration=True,  # 启用自动配置
-    auto_discover_package="examples"  # 自动发现当前包
+    auto_discover_package="examples.convention_app"
 )
 
 

@@ -21,7 +21,7 @@ sys.path.insert(0, str(project_root))
 app = Application(
     name="依赖注入示例",
     auto_configuration=True,
-    auto_discover_package="examples"
+    auto_discover_package="examples.dependency_injection_example"
 )
 
 

@@ -203,7 +203,13 @@ all_jobs = scheduler.list_all_jobs()
 | `is_enabled()` / `is_running()` / `has_jobs()` | 状态查询 |
 | `get_config()` | 当前调度器配置摘要 |
 
-未指定 `job_id` 时，默认可为 `cron_{函数名}`、`interval_{函数名}` 等。
+未指定 `job_id` 时，默认生成 `cron_{模块名}.{限定名}`（如
+`cron_app.jobs.SyncJobs.daily_sync`），`interval_`/`date_` 前缀同理。
+限定名包含类名，因此不同类中的同名方法不会冲突（0.2.0 起，issue #14；
+此前为 `cron_{函数名}`，同名方法会因 ID 冲突导致启动失败）。
+
+注册时即校验 ID 唯一性：显式传入重复的 `job_id` 会抛出 `SchedulerError`；
+自动生成的 ID 重复（同一函数注册多次）会追加 8 位随机后缀并记录 warning。
 
 ### 6.1 `ScheduledJob` 类
 

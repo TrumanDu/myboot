@@ -417,13 +417,84 @@ addopts = [
         pyproject_file = project_dir / 'pyproject.toml'
         pyproject_file.write_text(pyproject_content, encoding='utf-8')
         click.echo("✓ 创建 pyproject.toml")
-        
+
+        # 创建 Docker 支持文件（issue #1）
+        dockerfile_content = f"""# 多阶段构建：构建层安装依赖，运行层只保留运行所需内容
+FROM python:3.12-slim AS builder
+
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+
+WORKDIR /app
+COPY pyproject.toml ./
+# 如有 uv.lock 一并复制可获得可复现构建（无锁文件时此层退化为解析安装）
+RUN uv venv /opt/venv && \\
+    VIRTUAL_ENV=/opt/venv uv pip install --no-cache .
+
+FROM python:3.12-slim
+
+ENV VIRTUAL_ENV=/opt/venv \\
+    PATH="/opt/venv/bin:$PATH" \\
+    PYTHONUNBUFFERED=1
+
+WORKDIR /app
+COPY --from=builder /opt/venv /opt/venv
+COPY . .
+
+EXPOSE 8000
+
+# 配置可用环境变量覆盖（__ 为层级分隔符），如 SERVER__PORT=8080
+CMD ["python", "main.py"]
+"""
+        dockerfile = project_dir / 'Dockerfile'
+        dockerfile.write_text(dockerfile_content, encoding='utf-8')
+        click.echo("✓ 创建 Dockerfile")
+
+        dockerignore_content = """__pycache__/
+*.py[cod]
+.venv/
+venv/
+.git/
+.gitignore
+.pytest_cache/
+.coverage
+htmlcov/
+*.log
+logs/
+.vscode/
+.idea/
+Dockerfile
+docker-compose.yaml
+"""
+        dockerignore_file = project_dir / '.dockerignore'
+        dockerignore_file.write_text(dockerignore_content, encoding='utf-8')
+        click.echo("✓ 创建 .dockerignore")
+
+        compose_content = f"""services:
+  {project_name}:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      # MyBoot 配置支持环境变量覆盖，__ 为层级分隔符
+      - LOGGING__LEVEL=INFO
+      # - SERVER__WORKERS=4
+      # - CONFIG_FILE=/app/conf/config.prod.yaml
+    restart: unless-stopped
+"""
+        compose_file = project_dir / 'docker-compose.yaml'
+        compose_file.write_text(compose_content, encoding='utf-8')
+        click.echo("✓ 创建 docker-compose.yaml")
+
         click.echo()
         click.echo(f"✅ 项目 '{name}' 初始化完成！")
         click.echo()
         click.echo("下一步:")
         click.echo(f"  cd {name}")
         click.echo("  python main.py")
+        click.echo()
+        click.echo("Docker 部署:")
+        click.echo(f"  docker build -t {project_name} .")
+        click.echo(f"  docker run -p 8000:8000 {project_name}")
         click.echo()
         
     except Exception as e:

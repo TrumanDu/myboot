@@ -496,6 +496,73 @@ export LOGGING__LEVEL=DEBUG
 - [⏰ 任务调度器](docs/scheduler.md) - Cron / 间隔 / 一次性任务与配置说明
 - [⚙️ 配置管理](docs/configuration.md) - YAML、环境变量、远程配置与优先级
 
+## 🐳 Docker 部署
+
+`myboot init`（`api` / `full` 模板）会自动生成 `Dockerfile`、`.dockerignore`
+和 `docker-compose.yaml`，开箱即可容器化：
+
+```bash
+docker build -t my-app .
+docker run -p 8000:8000 my-app
+
+# 或用 compose
+docker compose up --build
+```
+
+`Dockerfile` 采用多阶段构建（uv 装依赖 → python:3.12-slim 运行）。容器中可用
+环境变量覆盖配置（`__` 为层级分隔符），无需改镜像：
+
+```bash
+docker run -p 8080:8080 -e SERVER__PORT=8080 -e LOGGING__LEVEL=DEBUG my-app
+```
+
+## 🧩 Worker 作用域与生命周期钩子（0.2.0+）
+
+多 worker 模式下，每个 worker 进程拥有独立的 service / client 实例，不再
+跨进程共享 fork 前创建的连接（issue #11）。可用 `scope` 显式声明生命周期：
+
+```python
+from myboot.core.decorators import service, client, on_worker_start, on_worker_stop
+
+@service(scope="singleton")   # 默认：每个 worker 一个实例
+class UserService: ...
+
+@service(scope="request")     # 每个请求（asyncio 任务）一个实例
+class RequestContext: ...
+
+@client()
+class RedisClient: ...
+
+# Worker 生命周期钩子：每个 worker 各触发一次
+@on_worker_start
+def open_pool():
+    ...
+
+@on_worker_stop
+def close_pool():
+    ...
+```
+
+> 注意：Windows 下父进程以 `terminate()` 硬终止 worker，`@on_worker_stop`
+> 钩子可能来不及执行；连接清理等关键逻辑不要只依赖它。
+
+## ⬆️ 从 0.1.x 升级到 0.2.0
+
+本次升级保持公开 API 兼容、不影响现有功能，仅以下两处为有意的破坏性变更：
+
+1. **定时任务默认 job_id 格式变更**：未显式指定 `job_id` 时，默认 ID 从
+   `cron_{函数名}` 改为 `cron_{模块名}.{限定名}`（`interval_`/`date_` 同理）。
+   不同类中的同名方法不再冲突。若你的代码按旧格式硬编码 ID 调用
+   `remove_job` / `get_job_info`，需改用新格式（或在注册时显式传入 `job_id`）。
+2. **异常类收敛**：`ValidationError`、`ConfigurationError` 统一为
+   `myboot.exceptions` 中的定义，`myboot.web.exceptions` 仍可 import（同一类）。
+   `myboot.web.exceptions.ValidationError` 旧有的 `error_type` 参数已移除，
+   以核心版签名 `(message, field, value, details)` 为准。
+
+其余修复（多 worker 实例独立化、内置配置默认值生效、`create_http_exception`
+/ 模块级函数路由 / `get_job_info` 等死路径修复、logger 同时支持 `%s` 与 `{}`
+占位符）均为行为修复，不需要改动你的代码。
+
 ### 1. Web API 开发
 
 **重要**：路由必须在 `@rest_controller` 装饰的类中定义，支持依赖注入。
@@ -928,7 +995,7 @@ for job in jobs:
     print(job)
 
 # 获取单个任务信息
-job_info = app.scheduler.get_job_info('cron_heartbeat')
+job_info = app.scheduler.get_job_info('cron_app.jobs.ScheduledJobs.heartbeat')  # 0.2.0 起默认 ID 为 cron_{模块名}.{限定名}
 print(job_info)
 ```
 
@@ -1362,7 +1429,7 @@ for job in jobs:
     print(f"任务ID: {job['job_id']}, 类型: {job['type']}, 函数: {job['func_name']}")
 
 # 获取单个任务信息
-job_info = app.scheduler.get_job_info('cron_heartbeat')
+job_info = app.scheduler.get_job_info('cron_app.jobs.ScheduledJobs.heartbeat')  # 0.2.0 起默认 ID 为 cron_{模块名}.{限定名}
 if job_info:
     print(f"Cron表达式: {job_info.get('cron')}")
     print(f"是否已执行: {job_info.get('executed', False)}")

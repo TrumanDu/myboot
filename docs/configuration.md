@@ -299,63 +299,52 @@ export SCHEDULER__TIMEZONE=Asia/Shanghai
 
 `get_config_bool` 将字符串视为真：`true`、`1`、`yes`、`on`（不区分大小写）。
 
-### 5.4 MyBoot 与 `.env` 的关系
+### 5.4 MyBoot 与 `.env` 的关系（0.2.0 起自动加载）
 
-MyBoot **不会**自动读取项目根目录的 `.env` 文件（`config.py` 未启用 Dynaconf 的 `load_dotenv`）。
+**0.2.0 起 MyBoot 自动加载项目根目录的 `.env` 文件**（通过 Dynaconf 的
+`load_dotenv`），`main.py` 无需再手动调用 `load_dotenv()`。
 
-`.env` 要生效，必须先把其中的键值加载进 **`os.environ`**（通常用 `python-dotenv`，项目依赖中已包含）。之后 Dynaconf 会像读取普通环境变量一样合并进配置，**优先级高于 YAML**。
+加载语义：
 
-同时受 **`ignore_unknown_envvars=True`** 约束：`.env` 里的变量名必须对应 **YAML 或内置默认配置中已声明过的键路径**，否则不会进入 `get_config()`（见上文 **5.1 已知键限制**）。
+- 路径：**项目根目录**（含 `pyproject.toml` 的目录）下的 `.env`；
+- 优先级：**真实环境变量 > `.env` > YAML 配置 > 内置默认值**
+  （`dotenv_override=False`：`.env` 不覆盖已存在的真实环境变量，与容器部署习惯一致）；
+- 仍受 **`ignore_unknown_envvars=True`** 约束：`.env` 里的变量名必须对应
+  **YAML 或内置默认配置中已声明过的键路径**，否则不会进入 `get_config()`
+  （见上文 **5.1 已知键限制**）。
 
 ```mermaid
 flowchart LR
-  A[".env / .local.env"] --> B["main.py 中 load_dotenv()"]
-  B --> C["os.environ"]
+  A[".env（项目根）"] -->|"框架自动加载"| C["os.environ"]
+  B["真实环境变量"] -->|"优先"| C
   C --> D["Dynaconf / MyBoot"]
   E["config.yaml"] --> D
 ```
 
-### 5.5 在 `main.py` 中加载.env
-
-在 **`create_app()` 或任何会触发 `get_settings()` 的导入之前** 调用 `load_dotenv`，否则配置单例可能已在未加载 `.env` 时初始化。
-
-**推荐 `main.py` 写法：**
-
-```python
-"""
-应用入口：先加载 .env，再创建 MyBoot 应用
-"""
-from pathlib import Path
-
-from dotenv import load_dotenv
-
-# 项目根目录（按你的 main.py 位置调整）
-ROOT = Path(__file__).resolve().parent
-
-# 先基础配置，再本地覆盖（.local.env 中同名项覆盖 .env）
-load_dotenv(ROOT / ".env")
-load_dotenv(ROOT / ".local.env", override=True)
-
-# 以下 import 会触发配置加载，必须放在 load_dotenv 之后
-from myboot import create_app
-
-app = create_app(name="我的应用")
-
-if __name__ == "__main__":
-    app.run()
-```
-
 **注意：**
 
-| 事项                | 说明                                                                      |
-| ------------------- | ------------------------------------------------------------------------- |
-| 调用顺序            | `load_dotenv` → `from myboot import ...` → `create_app()`                 |
-| 模块级 `get_config` | 其他文件若在 import 时调用 `get_config()`，也需保证入口已先 `load_dotenv` |
-| 修改 `.env` 后      | 需**重启进程**；不会热更新                                                |
-| 版本控制            | `.env`、`.local.env` 加入 `.gitignore`；可提交 `.env.example` 作模板      |
-| 键必须已声明        | `.env` 中每一项都须在 YAML（或 `default_settings`）中有对应路径，见 5.1   |
+| 事项                | 说明                                                                 |
+| ------------------- | -------------------------------------------------------------------- |
+| 修改 `.env` 后      | 需**重启进程**；不会热更新                                            |
+| 版本控制            | `.env` 加入 `.gitignore`；可提交 `.env.example` 作模板               |
+| 键必须已声明        | `.env` 中每一项都须在 YAML（或内置默认值）中有对应路径，见 5.1        |
+| 多个 env 文件       | 框架只自动加载根目录 `.env`；需要 `.local.env` 分层时仍可在 main.py 顶部自行 `load_dotenv(..., override=True)` |
 
-若使用 Uvicorn/Hypercorn 命令行启动（`uvicorn main:app`），只要 **`main` 模块被加载时会执行上述 `load_dotenv`**（写在 `main.py` 顶层即可）。
+### 5.5 旧版本（≤0.1.x）手动加载方式
+
+0.1.x 不自动加载 `.env`，需在 `create_app()` 之前手动调用：
+
+```python
+from pathlib import Path
+from dotenv import load_dotenv
+
+load_dotenv(Path(__file__).resolve().parent / ".env")
+
+from myboot import create_app   # 必须在 load_dotenv 之后
+app = create_app(name="我的应用")
+```
+
+升级到 0.2.0 后这段代码可以删除（保留也无害——重复加载是幂等的）。
 
 ### 5.6 `.env` 文件如何书写
 

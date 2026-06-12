@@ -494,7 +494,9 @@ export LOGGING__LEVEL=DEBUG
 - [⚡ REST API 异步任务](docs/rest-api-async-tasks.md) - REST API 中使用异步任务指南
 - [🔧 依赖注入](docs/dependency-injection.md) - 依赖注入使用指南
 - [⏰ 任务调度器](docs/scheduler.md) - Cron / 间隔 / 一次性任务与配置说明
-- [⚙️ 配置管理](docs/configuration.md) - YAML、环境变量、远程配置与优先级
+- [⚙️ 配置管理](docs/configuration.md) - YAML、环境变量、.env 与远程配置优先级
+- [🧩 多 Worker 模式](docs/multi-worker.md) - 作用域、worker 钩子、primary-first 协调、任务级 all_workers
+- [📊 Metrics 指南](docs/metrics.md) - Prometheus 指标、多进程聚合、自定义指标 API
 
 ## 🐳 Docker 部署
 
@@ -516,35 +518,25 @@ docker compose up --build
 docker run -p 8080:8080 -e SERVER__PORT=8080 -e LOGGING__LEVEL=DEBUG my-app
 ```
 
-## 🧩 Worker 作用域与生命周期钩子（0.2.0+）
+## 🧩 多 Worker 能力（0.2.0+）
 
-多 worker 模式下，每个 worker 进程拥有独立的 service / client 实例，不再
-跨进程共享 fork 前创建的连接（issue #11）。可用 `scope` 显式声明生命周期：
+多 worker 模式下每个 worker 进程拥有独立的 service / client 实例（issue #11）。
+完整说明见 [多 Worker 模式指南](docs/multi-worker.md)，能力速览：
 
-```python
-from myboot.core.decorators import service, client, on_worker_start, on_worker_stop
+- **作用域**：`@service(scope="singleton"|"request"|"factory")` 声明实例生命周期；
+- **Worker 钩子**：`@on_worker_start` / `@on_worker_stop` 每个 worker 各触发一次；
+- **Client 自动清理**：client 定义 `close()` 方法即可在 worker 停止时被框架自动调用，建连可直接写在 `__init__`；
+- **Primary-first 协调**：`run_primary_first(name, primary_fn, secondary_fn)`——primary 干重活（如下载模型），其余 worker 等完成后轻量加载；
+- **任务级 all_workers**：`@interval(hours=24, all_workers=True)` 让单个定时任务在每个 worker 都执行（如刷新进程内缓存），其余任务保持仅 primary 执行一份。
 
-@service(scope="singleton")   # 默认：每个 worker 一个实例
-class UserService: ...
+## 📊 Prometheus Metrics（0.2.0+）
 
-@service(scope="request")     # 每个请求（asyncio 任务）一个实例
-class RequestContext: ...
+`pip install myboot[metrics]` 后配置 `metrics.enabled: true` 即自动获得
+`/metrics` 端点与 HTTP 请求指标，多 worker 自动聚合；业务代码可用
+`get_counter` / `time_stage` 记录自定义指标。详见 [Metrics 指南](docs/metrics.md)。
 
-@client()
-class RedisClient: ...
-
-# Worker 生命周期钩子：每个 worker 各触发一次
-@on_worker_start
-def open_pool():
-    ...
-
-@on_worker_stop
-def close_pool():
-    ...
-```
-
-> 注意：Windows 下父进程以 `terminate()` 硬终止 worker，`@on_worker_stop`
-> 钩子可能来不及执行；连接清理等关键逻辑不要只依赖它。
+另外 0.2.0 起框架**自动加载项目根目录 `.env`**（真实环境变量优先），
+`main.py` 无需手动 `load_dotenv()`，详见 [配置管理](docs/configuration.md)。
 
 ## ⬆️ 从 0.1.x 升级到 0.2.0
 

@@ -323,6 +323,22 @@ class Application:
                 except Exception as e:
                     self.logger.error(f"Worker 停止钩子执行失败: {e}", exc_info=True)
 
+            # 自动关闭 client：对具有 close() 方法的 client 实例兜底调用
+            # （worker_stop_hooks 之后，shutdown_hooks 之前）。
+            # 应用若已自行 close，建议实现为幂等；二次 close 的异常降为 warning
+            for client_name, client_instance in list(self.clients.items()):
+                close_method = getattr(client_instance, "close", None)
+                if not callable(close_method):
+                    continue
+                try:
+                    if asyncio.iscoroutinefunction(close_method):
+                        await close_method()
+                    else:
+                        close_method()
+                    self.logger.debug(f"Client 已自动关闭: {client_name}")
+                except Exception as e:
+                    self.logger.warning(f"Client '{client_name}' close() 异常（已忽略）: {e}")
+
             # 执行关闭钩子
             for hook in self.shutdown_hooks:
                 try:

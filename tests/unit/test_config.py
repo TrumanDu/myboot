@@ -496,6 +496,36 @@ def remote_url():
         os.remove(cache)
 
 
+class TestDotenvAutoLoad:
+    """0.2.x F1：项目根 .env 自动加载（Dynaconf load_dotenv）"""
+
+    @pytest.fixture(autouse=True)
+    def isolate_environ(self):
+        # load_dotenv 会写 os.environ；快照-恢复整个 environ 避免污染后续测试
+        # （不能用 monkeypatch.setattr 替换 os.environ —— dotenv/dynaconf
+        # 内部持有原始 _Environ 对象引用，替换属性不生效）
+        saved = dict(os.environ)
+        yield
+        os.environ.clear()
+        os.environ.update(saved)
+
+    def test_dotenv_loaded_from_project_root(self, tmp_path):
+        (tmp_path / ".env").write_text("APP__NAME=dotenv-app\n", encoding="utf-8")
+        settings = create_settings()
+        assert settings.get("app.name") == "dotenv-app"
+
+    def test_real_env_var_beats_dotenv(self, tmp_path, monkeypatch):
+        # dotenv_override=False：真实环境变量优先于 .env
+        (tmp_path / ".env").write_text("APP__NAME=dotenv-app\n", encoding="utf-8")
+        monkeypatch.setenv("APP__NAME", "real-env")
+        settings = create_settings()
+        assert settings.get("app.name") == "real-env"
+
+    def test_no_dotenv_file_is_fine(self, tmp_path):
+        settings = create_settings()
+        assert settings.get("app.name") == "MyBoot App"
+
+
 class TestRemoteConfig:
     def test_is_url_detection(self):
         assert _is_url("http://example.com/c.yaml")

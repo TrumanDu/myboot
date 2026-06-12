@@ -131,6 +131,12 @@ def create_settings(config_file: Optional[str] = None) -> Dynaconf:
         # 是否合并环境变量
         merge_enabled=True,
 
+        # 自动加载项目根目录 .env（不覆盖已存在的真实环境变量，
+        # 与容器部署习惯一致：真实 env > .env > 配置文件）
+        load_dotenv=True,
+        dotenv_path=os.path.join(_find_project_root(), ".env"),
+        dotenv_override=False,
+
         # 默认值：以大写 kwargs 传入（Dynaconf 将任意大写 kwarg 注册为默认配置项）。
         # 注意不能用 default_settings= —— Dynaconf 没有该参数，
         # 它会被当成一个名为 DEFAULT_SETTINGS 的普通配置项，默认值整体失效

@@ -14,6 +14,7 @@ from .common import (
     parse_datetime,
     get_local_ip
 )
+from .worker_sync import run_primary_first, clear_markers
 
 __all__ = [
     "generate_id",
@@ -24,4 +25,6 @@ __all__ = [
     "generate_token",
     "parse_datetime",
     "get_local_ip",
+    "run_primary_first",
+    "clear_markers",
 ]

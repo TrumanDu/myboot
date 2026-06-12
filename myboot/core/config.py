@@ -159,6 +159,12 @@ def create_settings(config_file: Optional[str] = None) -> Dynaconf:
         LOGGING={
             "level": "INFO"
         },
+        METRICS={
+            "enabled": False,
+            "path": "/metrics",
+            "multiproc_dir": None,
+            "http_metrics": True
+        },
         SCHEDULER={
             "enabled": True,
             "timezone": "UTC",

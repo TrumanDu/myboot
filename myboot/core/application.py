@@ -66,6 +66,10 @@ class Application:
         # 初始化 loguru 日志系统（包括第三方库日志级别配置）
         setup_logging(self.config)
 
+        # Prometheus 多进程指标环境（须在 prometheus_client 被 import 之前配置）
+        from ..metrics import setup_multiproc_env
+        setup_multiproc_env(self.config, self.name)
+
         self.logger = logger.bind(name=self.name)
         
         # Worker 信息（多进程模式下由环境变量设置）
@@ -354,6 +358,14 @@ class Application:
                 except Exception as e:
                     self.logger.error(f"关闭钩子执行失败: {e}", exc_info=True)
 
+            # Prometheus multiproc：标记本进程退出，清理 gauge 残留文件
+            # （内部已兜底 try/except，此处再防御一层确保关闭流程不被打断）
+            try:
+                from ..metrics import mark_current_process_dead
+                mark_current_process_dead()
+            except Exception:
+                pass
+
         # 创建 FastAPI 应用
 
         app = FastAPI(
@@ -374,6 +386,24 @@ class Application:
             )
             self.logger.debug("CORS 中间件已启用")
 
+        # Prometheus 指标（metrics.enabled 时启用，可选依赖缺失只告警不报错）
+        from ..metrics import is_available as metrics_available, is_enabled as metrics_enabled
+        metrics_path = str(self.config.get("metrics.path", "/metrics") or "/metrics")
+        metrics_ready = False
+        if metrics_enabled(self.config):
+            if metrics_available():
+                metrics_ready = True
+                from ..metrics import _coerce_bool
+                if _coerce_bool(self.config.get("metrics.http_metrics", True), True):
+                    from ..metrics import HttpMetricsMiddleware
+                    app.add_middleware(HttpMetricsMiddleware, metrics_path=metrics_path)
+                    self.logger.debug("HTTP 指标中间件已启用")
+            else:
+                self.logger.warning(
+                    "metrics.enabled=true 但未安装 prometheus-client，"
+                    "指标功能不可用。安装方式: pip install myboot[metrics]"
+                )
+
         # 添加自定义中间件
         for middleware in self.middlewares:
             app.add_middleware(middleware.middleware_class, **middleware.kwargs)
@@ -383,7 +413,10 @@ class Application:
         response_format_enabled = self.config.get("server.response_format.enabled", True)
         if response_format_enabled:
             from myboot.web.middleware import ResponseFormatterMiddleware
-            exclude_paths = self.config.get("server.response_format.exclude_paths", [])
+            exclude_paths = list(self.config.get("server.response_format.exclude_paths", []) or [])
+            if metrics_ready:
+                # metrics 端点输出 Prometheus 文本格式，不做 JSON 包装
+                exclude_paths.append(metrics_path)
             app.add_middleware(
                 ResponseFormatterMiddleware,
                 exclude_paths=exclude_paths,
@@ -399,6 +432,12 @@ class Application:
 
         # 添加健康检查端点
         self._add_health_endpoints(app)
+
+        # 挂载 Prometheus 指标端点（懒初始化，首次请求才 import prometheus_client）
+        if metrics_ready:
+            from ..metrics import make_metrics_asgi_app
+            app.mount(metrics_path, make_metrics_asgi_app())
+            self.logger.debug(f"Prometheus 指标端点已挂载: {metrics_path}")
 
         return app
 

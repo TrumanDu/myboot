@@ -211,6 +211,18 @@ def test_multiworker_per_worker_instances_hooks_and_scheduler(fixture_app):
         f"实际执行进程: {job_pids}"
     )
 
+    # ---- 4b. all_workers=True 任务在每个 worker 都执行 ----
+    deadline = time.time() + 30
+    while time.time() < deadline and len(list(job_dir.glob("awjob_*.txt"))) < WORKERS:
+        time.sleep(0.5)
+    awjob_pids = sorted(
+        int(path.stem.split("_")[1]) for path in job_dir.glob("awjob_*.txt")
+    )
+    assert awjob_pids == sorted(start_records.keys()), (
+        f"all_workers 任务应在全部 worker 执行 (pids={sorted(start_records.keys())})，"
+        f"实际执行进程: {awjob_pids}，日志尾部:\n{_tail(log_path)}"
+    )
+
     # ---- 5. （POSIX）优雅关闭后 stop 钩子每个 worker 各触发一次 ----
     if sys.platform != "win32":
         proc.terminate()  # SIGTERM -> 优雅关闭 -> lifespan 关闭阶段

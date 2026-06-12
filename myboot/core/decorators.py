@@ -59,7 +59,7 @@ def patch(path: str, **kwargs):
     return route(path, methods=['PATCH'], **kwargs)
 
 
-def cron(cron_expression: str, enabled: Optional[bool] = None, **kwargs):
+def cron(cron_expression: str, enabled: Optional[bool] = None, all_workers: bool = False, **kwargs):
     """
     Cron 任务装饰器
     
@@ -75,6 +75,8 @@ def cron(cron_expression: str, enabled: Optional[bool] = None, **kwargs):
                  可以通过手动获取配置来传递，例如：
                  from myboot.core.config import get_config
                  enabled = get_config('jobs.heartbeat.enabled', True)
+        all_workers: 多 worker 模式下是否在每个 worker 进程都注册执行
+                     默认 False（仅 primary worker 执行）
         **kwargs: 其他任务参数
     """
     def decorator(func):
@@ -82,13 +84,14 @@ def cron(cron_expression: str, enabled: Optional[bool] = None, **kwargs):
             'type': 'cron',
             'cron': cron_expression,
             'enabled': enabled,
+            'all_workers': all_workers,
             'kwargs': kwargs
         }
         return func
     return decorator
 
 
-def interval(seconds: int = None, minutes: int = None, hours: int = None, enabled: Optional[bool] = None, **kwargs):
+def interval(seconds: int = None, minutes: int = None, hours: int = None, enabled: Optional[bool] = None, all_workers: bool = False, **kwargs):
     """
     间隔任务装饰器
     
@@ -104,6 +107,8 @@ def interval(seconds: int = None, minutes: int = None, hours: int = None, enable
                  可以通过手动获取配置来传递，例如：
                  from myboot.core.config import get_config
                  enabled = get_config('jobs.heartbeat.enabled', True)
+        all_workers: 多 worker 模式下是否在每个 worker 进程都注册执行
+                     默认 False（仅 primary worker 执行）
         **kwargs: 其他任务参数
     """
     def decorator(func):
@@ -112,13 +117,14 @@ def interval(seconds: int = None, minutes: int = None, hours: int = None, enable
             'type': 'interval',
             'interval': interval_value,
             'enabled': enabled,
+            'all_workers': all_workers,
             'kwargs': kwargs
         }
         return func
     return decorator
 
 
-def once(run_date: str = None, enabled: Optional[bool] = None, **kwargs):
+def once(run_date: str = None, enabled: Optional[bool] = None, all_workers: bool = False, **kwargs):
     """
     一次性任务装饰器
     
@@ -132,6 +138,8 @@ def once(run_date: str = None, enabled: Optional[bool] = None, **kwargs):
                  可以通过手动获取配置来传递，例如：
                  from myboot.core.config import get_config
                  enabled = get_config('jobs.heartbeat.enabled', True)
+        all_workers: 多 worker 模式下是否在每个 worker 进程都注册执行
+                     默认 False（仅 primary worker 执行）
         **kwargs: 其他任务参数
     """
     def decorator(func):
@@ -139,6 +147,7 @@ def once(run_date: str = None, enabled: Optional[bool] = None, **kwargs):
             'type': 'once',
             'run_date': run_date,
             'enabled': enabled,
+            'all_workers': all_workers,
             'kwargs': kwargs
         }
         return func

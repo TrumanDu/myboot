@@ -435,6 +435,17 @@ class Scheduler:
         """
         return [self.get_job_info(job.id) for job in self._scheduler.get_jobs()]
        
+    def enable(self) -> None:
+        """启用调度器
+
+        任务级 all_workers 支持：非 primary worker 默认调度器禁用，
+        当注册门控放行了 all_workers=True 的任务时调用本方法启用调度器，
+        使其能在 lifespan 中真正启动。
+        """
+        if not self._enabled:
+            self._enabled = True
+            self._logger.debug("调度器已启用（all_workers 任务触发）")
+
     def is_enabled(self) -> bool:
         """检查调度器是否启用"""
         return self._enabled

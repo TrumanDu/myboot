@@ -73,9 +73,14 @@ class Application:
         self._worker_count = int(os.environ.get("MYBOOT_WORKER_COUNT", "1"))
         self._is_primary_worker = os.environ.get("MYBOOT_IS_PRIMARY_WORKER", "1") == "1"
         
-        # Scheduler 默认只在 primary worker 启动（可通过配置覆盖）
+        # Scheduler 默认只在 primary worker 启动（可通过 scheduler.on_all_workers
+        # 全局配置覆盖）。任务级 all_workers=True 的任务在非 primary worker 注册时，
+        # 注册门控会调用 scheduler.enable() 按需启用调度器实例。
         scheduler_on_all_workers = self.config.get("scheduler.on_all_workers", False)
-        self._scheduler_enabled = self._is_primary_worker or scheduler_on_all_workers
+        scheduler_globally_enabled = self.config.get("scheduler.enabled", True)
+        self._scheduler_enabled = (
+            self._is_primary_worker or scheduler_on_all_workers
+        ) and scheduler_globally_enabled
         self.scheduler = Scheduler(config=self.config, enabled=self._scheduler_enabled)
 
         # 中间件列表
@@ -680,9 +685,13 @@ class Application:
         self._is_primary_worker = os.environ.get("MYBOOT_IS_PRIMARY_WORKER", "1") == "1"
 
         # 2. 重算调度器门控并重建调度器（默认仅 primary worker 启用，
-        #    可通过 scheduler.on_all_workers 配置覆盖）
+        #    可通过 scheduler.on_all_workers 配置覆盖；任务级 all_workers=True
+        #    的任务在本 worker 注册时由注册门控按需调用 scheduler.enable()）
         scheduler_on_all_workers = self.config.get("scheduler.on_all_workers", False)
-        self._scheduler_enabled = self._is_primary_worker or scheduler_on_all_workers
+        scheduler_globally_enabled = self.config.get("scheduler.enabled", True)
+        self._scheduler_enabled = (
+            self._is_primary_worker or scheduler_on_all_workers
+        ) and scheduler_globally_enabled
         self.scheduler = Scheduler(config=self.config, enabled=self._scheduler_enabled)
 
         # 3. 防御性重置：fork 子进程若继承了父进程已引导的状态

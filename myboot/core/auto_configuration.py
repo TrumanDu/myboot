@@ -391,6 +391,27 @@ class AutoConfigurationManager:
         # 默认启用
         return True
 
+    def _should_register_job_on_this_worker(self, app, job_config: dict) -> bool:
+        """
+        判断任务是否应在当前 worker 进程注册（任务级 all_workers 门控）
+
+        规则：
+        - scheduler.enabled=false：全局禁用，任何 worker 都不注册
+        - primary worker：注册全部任务（现状行为）
+        - 非 primary worker：
+            - scheduler.on_all_workers=true（全局配置）：注册全部任务
+            - 任务声明 all_workers=True：注册该任务
+            - 其他：跳过
+        """
+        config = getattr(app, 'config', None)
+        if config is not None and not config.get('scheduler.enabled', True):
+            return False
+        if getattr(app, 'is_primary_worker', True):
+            return True
+        if config is not None and config.get('scheduler.on_all_workers', False):
+            return True
+        return bool(job_config.get('all_workers', False))
+
     def _get_class_instance(self, cls: Type, app) -> Any:
         """
         获取类实例，支持依赖注入
@@ -853,7 +874,22 @@ class AutoConfigurationManager:
             if not self._is_job_enabled(method, job_config):
                 logger.info(f"任务已禁用，跳过注册: {cls.__name__}.{method_name} ({module_name})")
                 continue
-            
+
+            # 任务级 all_workers 门控：非 primary worker 只注册声明了
+            # all_workers=True 的任务（scheduler.on_all_workers=true 可全局覆盖）
+            if not self._should_register_job_on_this_worker(app, job_config):
+                logger.debug(
+                    f"当前 worker 非 primary 且任务未声明 all_workers，跳过注册: "
+                    f"{cls.__name__}.{method_name} ({module_name})"
+                )
+                continue
+
+            # 非 primary worker 上放行的 all_workers 任务：确保调度器实例启用
+            # （非 primary worker 的调度器默认 enabled=False，仅靠注册门控
+            #   决定实际任务集；scheduler.enabled=false 时上面门控已拦截）
+            if not getattr(app, 'is_primary_worker', True):
+                app.scheduler.enable()
+
             # 注册任务
             try:
                 if job_config['type'] == 'cron':
